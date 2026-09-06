@@ -1,0 +1,8 @@
+{
+  "package": "ffmpeg-n8.1.2-50-g1a748fe2cd-win64-lgpl-shared-8.1.zip",
+  "version": "n8.1.2-50-g1a748fe2cd-20260905",
+  "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-05-13-10/ffmpeg-n8.1.2-50-g1a748fe2cd-win64-lgpl-shared-8.1.zip",
+  "sha256": "8702705c110c706f32522f3b451368df677510a094fbc56d370cd35d24822edf",
+  "license": "LGPL-3.0-or-later",
+  "note": "Pinned upstream release. Archive integrity is checked before installation. DLL hashes match the tested 20260905 runtime."
+}

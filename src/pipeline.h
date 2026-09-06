@@ -43,11 +43,20 @@ public:
     std::vector<uint32_t> Process(unsigned frame);
     void ProcessP010(unsigned frame, std::vector<uint16_t>& pixels);
     void ReadP010(std::vector<uint16_t>& pixels);
+    void SubmitP010(unsigned frame);
+    void CollectP010(std::vector<uint16_t>& pixels);
+    ID3D11Device* Device() const { return device_.Get(); }
+    ID3D11DeviceContext* Context() const { return context_.Get(); }
+    void UploadTexture(ID3D11Texture2D* texture, unsigned slice);
+    void ProcessTexture(unsigned frame, ID3D11Texture2D* destination);
     unsigned lastRowPitch = 0;
 private:
     void Blit(unsigned frame);
-    void WaitGpu();
+    void WaitGpu(bool issue = true);
+    void PackP010();
+    bool p010Pending_ = false;
     ComPtr<ID3D11ComputeShader> packShader_;
+    ComPtr<ID3D11ComputeShader> texturePackShader_;
     ComPtr<ID3D11ShaderResourceView> rgbView_;
     ComPtr<ID3D11Buffer> packed_, packedStaging_;
     ComPtr<ID3D11UnorderedAccessView> packedView_;

@@ -6,7 +6,7 @@
 
 GUI에서 영상, GPU, 출력 형식과 품질을 선택할 수 있습니다. 결과는 **HEVC Main10 · BT.2020 · PQ** 형식의 MKV 또는 MP4로 저장됩니다. 모든 변환은 로컬 PC에서 실행합니다.
 
-> 현재 버전: **v0.3.5 — GUI 테스트 버전**
+> 현재 버전: **v0.4.0 — GPU 직접 전달**
 > 원본 해상도와 프레임률을 유지합니다. 해상도 업스케일링이나 프레임 보간 기능은 포함하지 않습니다.
 
 [사용 기술](#무엇을-이용하나요) · [NGX HDR 비교](#ngx-hdrtruehdr과-무엇이-다른가요) · [작동 과정](#어떤-순서로-작동하나요) · [GUI 사용법](#gui-사용법) · [CLI 사용법](#명령줄-사용법) · [문제 해결](#오류가-발생했을-때) · [빌드](#소스에서-빌드하기)
@@ -46,7 +46,7 @@ HDR 처리는 드라이버의 D3D11 확장 경로를 사용합니다. RTX Video 
 | HDR 기능 호출 | D3D11 Video Processor에 NVIDIA 전용 HDR 확장 전달 | RTX Video SDK/NGX 기능을 초기화하고 프레임 처리 호출 |
 | HDR 효과 조절 | **NVIDIA App에서 RTX Video HDR의 최대 밝기·중간 회색 밝기·대비·채도 조절 가능.** 이 프로그램에는 별도 효과 조절 UI가 없음. 출력 반영 검증 범위는 아래 참고 | `contrast`, `saturation`, `middlegray`, `maxluminance` 제공 |
 | 인코딩 품질 설정 | CQ·비트레이트는 HDR 처리 후 HEVC 압축 품질을 조절 | TrueHDR 효과 파라미터와 인코더 품질 설정을 구분해서 사용 |
-| 애플리케이션 구성 | 독립 GUI + C++ 엔진 + 외부 FFmpeg. 앱에서 TrueHDR SDK를 직접 호출하지 않음 | NVEncC의 영상 필터로 SDK 기능을 호출해 인코딩 흐름에 연결 |
+| 애플리케이션 구성 | 독립 GUI + C++ 엔진 + FFmpeg 공유 라이브러리 및 외부 도구. 앱에서 TrueHDR SDK를 직접 호출하지 않음 | NVEncC의 영상 필터로 SDK 기능을 호출해 인코딩 흐름에 연결 |
 | 파일 저장 | HEVC Main10, MKV/MP4 저장까지 이 프로그램이 처리 | TrueHDR은 처리 필터이며 최종 코덱·컨테이너는 NVEncC 등 호출 프로그램에서 결정 |
 
 NGX 쪽 효과 파라미터와 필터 구성은 [NVEncC 옵션 문서](https://github.com/rigaya/NVEnc/blob/master/NVEncC_Options.en.md#--vpp-ngx-truehdr-param1value1param2value2) 및 [NGX 필터 소스](https://github.com/rigaya/NVEnc/blob/master/NVEncCore/NVEncFilterNGX.cpp)를 기준으로 정리했습니다. 이 프로그램의 드라이버 확장 호출과 픽셀 처리는 [pipeline.cpp](src/pipeline.cpp)에서 확인할 수 있습니다. 비교 확인일은 2026-09-06이며, 외부 프로젝트의 구현은 버전에 따라 달라질 수 있습니다.
@@ -81,7 +81,7 @@ flowchart TD
 4. **GPU에서 HDR 처리와 색 변환을 수행합니다.** 드라이버 HDR 출력의 RGB 픽셀을 BT.2020/PQ로 해석하고, GPU 셰이더로 limited-range P010에 담습니다. P010은 10비트 YUV 4:2:0 데이터를 담는 픽셀 형식입니다.
 5. **인코딩과 저장을 마무리합니다.** NVENC로 영상을 인코딩하고 오디오를 결합합니다. 코덱·색 태그·크기를 확인한 뒤 최종 결과 파일을 만듭니다.
 
-현재 엔진과 FFmpeg는 별도 프로세스입니다. 하드웨어 처리를 사용하지만, 프로세스 사이에는 CPU 메모리 복사가 남아 있습니다. 전체 출력 재디코딩 검사는 기본 실행에서 생략하며 개발용 옵션으로 선택할 수 있습니다.
+기본 경로는 FFmpeg 공유 라이브러리와 같은 D3D11 장치를 사용합니다. 디코딩 텍스처 → HDR → P010 텍스처 → NVENC로 연결하며, 영상 프레임을 CPU로 읽어오지 않습니다. 8개 NVENC surface와 4프레임 지연으로 처리를 겹칩니다. 오디오 결합과 출력 확인에는 외부 FFmpeg/ffprobe를 사용합니다. `--pipe-video`는 이전의 파이프 처리 경로를 선택합니다. 전체 출력 재디코딩 검사는 기본 실행에서 생략하며 개발용 옵션으로 선택할 수 있습니다.
 
 ## 실행에 필요한 환경
 
@@ -91,9 +91,9 @@ flowchart TD
 - D3D11VA와 `hevc_nvenc`를 지원하는 **ffmpeg.exe**, **ffprobe.exe**
 - 결과를 올바르게 감상할 수 있는 **HDR 디스플레이와 HDR 지원 플레이어**
 
-FFmpeg 도구는 변환 엔진 옆 또는 `PATH`에 준비합니다. CLI에서는 `--ffmpeg-dir`로 도구 폴더를 지정할 수도 있습니다. 프로그램은 Windows HDR나 NVIDIA App 설정을 변경하지 않습니다.
+첫 실행의 **필수 구성 설치** 버튼 또는 `Setup-Runtime.cmd`를 실행하면 FFmpeg 공유 DLL과 ffmpeg/ffprobe가 프로그램 옆에 설치됩니다. 인터넷 연결이 필요하며 날짜 고정 URL의 ZIP을 SHA256 검증한 뒤 사용합니다. 설치는 프로그램 폴더 안에서만 이루어지고 관리자 권한이나 PATH 변경은 필요하지 않습니다. CLI에서는 `--ffmpeg-dir`로 도구 폴더를 지정할 수도 있습니다. 프로그램은 Windows HDR나 NVIDIA App 설정을 변경하지 않습니다.
 
-검증 환경은 RTX 5080 / RTX 4060, NVIDIA 드라이버 616.56, FFmpeg 8.0입니다. 드라이버 확장 동작은 GPU·드라이버·디스플레이 설정에 영향을 받을 수 있으며, 모든 조합의 호환성을 보장하지 않습니다.
+검증 환경은 RTX 5080 / RTX 4060, NVIDIA 드라이버 616.56, FFmpeg 공유 라이브러리 8.1.2 및 외부 도구 8.0/8.1.2입니다. 드라이버 확장 동작은 GPU·드라이버·디스플레이 설정에 영향을 받을 수 있으며, 모든 조합의 호환성을 보장하지 않습니다.
 
 ## GUI 사용법
 
@@ -101,7 +101,7 @@ FFmpeg 도구는 변환 엔진 옆 또는 `PATH`에 준비합니다. CLI에서�
 
 [GitHub Releases](https://github.com/yoonun-ynun/RTX-Video-HDR-Upscaler/releases/latest)에서 Windows x64 ZIP을 내려받아 압축을 풀고 **`RTXVideoHDR.exe`**를 실행합니다. 소스만 받은 경우에는 아래 [빌드 방법](#소스에서-빌드하기)을 따르세요.
 
-배포 ZIP에는 GUI, 변환 엔진, 기본 설정과 문서가 포함됩니다. FFmpeg/ffprobe는 별도로 준비해야 합니다. 시험 영상과 개인 설정은 포함하지 않습니다.
+배포 ZIP에는 GUI, 변환 엔진, 기본 설정, 문서와 구성 설치 도구가 포함됩니다. FFmpeg 바이너리를 재배포하지 않으며, 설치 도구가 BtbN의 공식 GitHub 배포에서 직접 내려받습니다. 프로그램 폴더와 PATH에 있는 FFmpeg 도구를 먼저 확인해 그대로 사용합니다. 일반 단일 실행 파일 배포에 GPU 처리용 DLL이 없으면 DLL 추가만 안내합니다. 설치 후 GUI가 다시 열립니다. 원격 파일을 받기 어려운 환경에서는 날짜 고정 ZIP을 따로 받아 `tools/setup-runtime.ps1 -Archive 경로 -Destination 프로그램폴더`로 설치할 수 있습니다. 시험 영상과 개인 설정은 포함하지 않습니다.
 
 다음 파일은 같은 폴더에 보관합니다.
 
@@ -110,8 +110,11 @@ RTXVideoHDR.exe                 GUI
 RTXVideoHDR.exe.config          GUI 실행 설정
 settings.ini                   출력 품질 설정 — 자동 저장
 RTXVideoHDRConvert.exe          실제 변환 엔진
-ffmpeg.exe                     별도로 준비 — PATH에 있으면 생략 가능
-ffprobe.exe                    별도로 준비 — PATH에 있으면 생략 가능
+Setup-Runtime.cmd              첫 실행 구성 설치
+tools/                         설치 스크립트와 검증 해시
+native-runtime.required        GUI의 구성 확인 표시 파일
+avcodec-62.dll 등               설치 도구가 받는 공유 라이브러리
+ffmpeg.exe / ffprobe.exe        설치 도구가 받는 오디오 결합·검사 도구
 ```
 
 ### 2. 영상과 출력 설정 선택
@@ -279,7 +282,10 @@ GUI 하단의 로그와 출력 폴더의 **`rtxhdr-run-*`** 디렉터리를 확�
 프로젝트 루트에서 실행합니다.
 
 ```powershell
-# C++ 엔진과 GUI를 함께 빌드
+# GPU 직접 전달 빌드: tools/ffmpeg-native-lock.json의 패키지를 내려받아 압축 해제
+.\tools\build.ps1 -FFmpegRoot "C:\dev\ffmpeg-shared"
+
+# 공유 라이브러리 없이 기존 파이프 경로만 빌드
 .\tools\build.ps1
 
 # GUI만 다시 빌드
@@ -315,3 +321,27 @@ v0.2의 4K 432프레임 시험에서 약 36.6~39.2fps를 측정했습니다. 이
 - [초기 단계 실험 결과](docs/stage1-results.md)
 
 초기 계획·실험 문서에는 당시의 구현 범위와 향후 계획이 포함됩니다. 현재 사용법과 지원 범위는 이 README 및 v0.3 문서를 기준으로 확인하세요.
+
+### 인코더 종료 오류 진단 (로컬 보강 빌드)
+
+변환이 실패하면 GUI에 표시된 진단 폴더를 확인하세요. `error.json`의 `exit_code`는 변환 프로그램의 종료 코드이며, FFmpeg 자체 종료 코드는 아래 파일에 별도로 기록합니다.
+
+- `encode.log.command.json`: 실행한 FFmpeg 경로와 인자 배열. 다른 자식 프로세스도 각 로그 옆에 같은 형식으로 기록합니다.
+- `encode.log.failure.json`: 오류 동작, Win32 오류, PID, 프로세스 종료 여부, 종료 코드(10진수·16진수), stdin에 전송한 바이트 수. 아직 실행 중이거나 조회하지 못한 종료 코드는 `null`입니다.
+- `encode.log.tail.txt`: 실패 시점의 stderr 끝부분(최대 16 KiB). 로그가 없으면 빈 파일입니다. JSON의 `stderr_tail_hex`에는 같은 내용을 원시 바이트의 16진수로 보존합니다.
+- 인코더 입력 전송 실패 시 `error.json` 메시지에는 완전히 전달한 프레임 수, 실패한 프레임 인덱스(0부터 시작), 처리 경과 시간이 포함됩니다. 전달한 프레임 수는 최종 인코딩 완료 프레임 수를 의미하지 않습니다.
+
+파이프 쓰기 실패 시 자식 프로세스 종료를 최대 2초 기다린 뒤, 정리 과정에서 프로세스를 종료하기 전에 상태를 수집합니다. 진단 저장 자체가 실패해도 원래 오류를 유지합니다. 이 보강은 원인 파악을 위한 것으로 인코더 충돌을 자동 복구하거나 변환을 이어서 재개하지는 않습니다. 실행 인자에는 로컬 영상 경로가 포함되므로 로그를 공유할 때 참고하세요.
+
+### GPU 직접 전달과 처리 겹치기
+
+기본 경로는 GPU 텍스처를 직접 전달합니다. `--pipe-video` 경로에서도 입력 읽기·GPU HDR 처리·인코더 전송을 겹쳐 수행합니다. 화질 설정은 유지합니다. CLI의 `--serial-pipeline`으로 기존 순차 방식과 비교할 수 있습니다. `--diagnostics`와 `--cpu-color`는 순차 경로를 사용합니다. 측정 조건과 제한은 [로컬 성능 검증](docs/performance-overlap.md)을 참고하세요.
+
+
+### v0.4.0 성능과 진단
+
+4K 432프레임·RTX 4060·CQ 18 시험에서 GPU 직접 전달은 약 96.7fps, 이전 순차 경로는 약 22.9fps였습니다. 짧은 구간과 당시 부하에서의 측정이며 다른 영상·GPU의 속도를 보장하지 않습니다. 기존 결과와 전체 프레임 픽셀·타임스탬프·HDR 태그·오디오 일치를 검증했습니다. 인코딩 프리셋, CQ와 HDR 수식은 유지합니다.
+
+직접 경로에서는 `native_gpu_pipeline: true`가 `result.json`에 기록됩니다. `native.log`에는 FFmpeg API 메시지와 주기적인 전달 프레임 수, `native-config.json`에는 라이브러리 버전·입력·인코딩 설정이 남습니다. 파이프 경로의 `encode.log`와 프로세스 종료 진단도 유지합니다. `--serial-pipeline`, `--software-decode`, `--cpu-color`, `--diagnostics`는 비교용 파이프 경로를 사용합니다.
+
+FFmpeg 공유 라이브러리는 LGPL에 따라 사용하며 원래 이름의 DLL을 교체할 수 있습니다. 설치되는 패키지의 라이선스는 `FFmpeg-LICENSE.txt`, 출처·버전·검증 해시는 `runtime-version.json`에서 확인할 수 있습니다. [FFmpeg 소스](https://ffmpeg.org/download.html#get-sources), [BtbN 빌드 스크립트와 배포](https://github.com/BtbN/FFmpeg-Builds)를 참고하세요.

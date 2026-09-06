@@ -1,6 +1,8 @@
 #include "child_process.h"
 #include <algorithm>
 #include <array>
+#include <sstream>
+#include <iomanip>
 
 namespace {
 struct Handle {
@@ -46,7 +48,12 @@ std::filesystem::path FindTool(const wchar_t* name,const std::filesystem::path& 
     return path.data();
 }
 ChildProcess::ChildProcess(const std::filesystem::path& exe,const std::vector<std::wstring>& args,
-                          const std::filesystem::path& log,bool readOutput,bool writeInput) {
+                          const std::filesystem::path& log,bool readOutput,bool writeInput) : log_(log) {
+    std::ostringstream launch;
+    launch << "{\"executable\":" << JsonString(Utf8(exe.c_str())) << ",\"arguments\":[";
+    for(size_t i=0;i<args.size();++i) launch << (i?",":"") << JsonString(Utf8(args[i].c_str()));
+    launch << "]}\n";
+    WriteText(log.wstring()+L".command.json",launch.str());
     SECURITY_ATTRIBUTES sa{sizeof(sa),nullptr,TRUE};
     Handle childInput,childOutput,childError,parentRead,parentWrite,job,process;
     childError.h=CreateFileW(FileSystemPath(log).c_str(),GENERIC_WRITE,FILE_SHARE_READ,&sa,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
@@ -106,15 +113,59 @@ void ChildProcess::Write(const void* data,size_t count) {
     auto ptr=static_cast<const uint8_t*>(data);
     while(count) {
         DWORD n=0;
-        WinCheck(WriteFile(write_,ptr,static_cast<DWORD>(std::min<size_t>(count,1024*1024)),&n,nullptr),"Write encoder input (see encode.log)");
+        if(!WriteFile(write_,ptr,static_cast<DWORD>(std::min<size_t>(count,1024*1024)),&n,nullptr)) {
+            const DWORD error=GetLastError();
+            throw Failure(6,RecordFailure("Write encoder input",error,2000));
+        }
         if(!n) throw Failure(6,"Encoder input stalled");
-        ptr+=n; count-=n;
+        ptr+=n; count-=n; writtenBytes_+=n;
     }
 }
 void ChildProcess::CloseInput() { if(write_) {CloseHandle(write_);write_=nullptr;} }
 unsigned ChildProcess::Wait(DWORD timeoutMs) {
-    if(WaitForSingleObject(process_,timeoutMs)!=WAIT_OBJECT_0) throw Failure(6,"Child process completion timeout");
-    DWORD code=0; WinCheck(GetExitCodeProcess(process_,&code),"Child exit status"); return code;
+    DWORD wait=WaitForSingleObject(process_,timeoutMs);
+    if(wait!=WAIT_OBJECT_0) throw Failure(6,RecordFailure("Child process wait",wait==WAIT_FAILED?GetLastError():WAIT_TIMEOUT,0));
+    DWORD code=0; WinCheck(GetExitCodeProcess(process_,&code),"Child exit status");
+    if(code) throw Failure(6,RecordFailure("Child process failed",0,0));
+    return code;
+}
+std::string ChildProcess::RecordFailure(const char* operation,DWORD error,DWORD waitMs) {
+    // Capture before destruction closes the job and kills any remaining child.
+    DWORD wait=WaitForSingleObject(process_,waitMs), code=0;
+    bool exited=wait==WAIT_OBJECT_0;
+    bool known=exited && GetExitCodeProcess(process_,&code);
+    std::ostringstream hex; hex << "0x" << std::hex << std::uppercase << std::setw(8) << std::setfill('0') << code;
+    std::string message=std::string(operation)+": Win32 "+std::to_string(error)+"; child "+
+        (known?"exit="+std::to_string(code)+" ("+hex.str()+")":exited?"exit status unavailable":wait==WAIT_TIMEOUT?"still running":"status unavailable")+
+        "; see "+Utf8(log_.filename().c_str())+".failure.json";
+    try {
+        std::string tail; DWORD logError=0;
+        Handle file; file.h=CreateFileW(FileSystemPath(log_).c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
+        if(file.h==INVALID_HANDLE_VALUE) logError=GetLastError();
+        else {
+            LARGE_INTEGER size{},offset{};
+            if(!GetFileSizeEx(file.h,&size)) logError=GetLastError();
+            else {
+                offset.QuadPart=std::max<LONGLONG>(0,size.QuadPart-16384);
+                DWORD n=0; std::array<char,16384> data{};
+                if(!SetFilePointerEx(file.h,offset,nullptr,FILE_BEGIN) || !ReadFile(file.h,data.data(),static_cast<DWORD>(data.size()),&n,nullptr)) logError=GetLastError();
+                else tail.assign(data.data(),n);
+            }
+        }
+        // Raw-byte hex preserves even truncated/non-UTF8 stderr without invalid JSON.
+        std::ostringstream tailHex; tailHex << std::hex << std::setfill('0');
+        for(unsigned char c:tail) tailHex << std::setw(2) << static_cast<unsigned>(c);
+        std::ostringstream report;
+        report << "{\"operation\":" << JsonString(operation) << ",\"win32_error\":" << error
+            << ",\"pid\":" << GetProcessId(process_) << ",\"wait_result\":" << wait
+            << ",\"exited\":" << (exited?"true":"false") << ",\"exit_code\":" << (known?std::to_string(code):"null")
+            << ",\"exit_code_hex\":" << (known?JsonString(hex.str()):"null")
+            << ",\"stdin_bytes_written\":" << writtenBytes_ << ",\"log_read_error\":" << logError
+            << ",\"stderr_tail_hex\":" << JsonString(tailHex.str()) << "}\n";
+        WriteText(log_.wstring()+L".failure.json",report.str());
+        WriteText(log_.wstring()+L".tail.txt",tail);
+    } catch(...) { message+="; diagnostic snapshot could not be fully saved"; }
+    return message;
 }
 std::string ChildProcess::Capture(size_t maxBytes) {
     std::string result; std::array<char,32768> buf{};

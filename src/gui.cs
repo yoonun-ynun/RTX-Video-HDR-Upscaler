@@ -169,7 +169,30 @@ internal sealed class HdrWindow : Form
         b.Text = text; b.SetBounds(x,y,w,36); b.UseVisualStyleBackColor = true; b.Click += action; parent.Controls.Add(b);
         if(parent is GroupBox) b.Anchor = AnchorStyles.Top | AnchorStyles.Right;
     }
+    internal static bool RuntimeFileAvailable(string name) {
+        if(File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,name)))return true;
+        foreach(string entry in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)) {
+            string directory=Environment.ExpandEnvironmentVariables(entry.Trim().Trim('"'));
+            if(String.IsNullOrWhiteSpace(directory))continue;
+            try {if(File.Exists(Path.Combine(directory,name)))return true;}
+            catch(ArgumentException) {} catch(NotSupportedException) {}
+        }
+        return false;
+    }
+    bool MissingRuntime() {
+        if(!File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"native-runtime.required")))return false;
+        foreach(string name in new string[]{"avcodec-62.dll","avformat-62.dll","avutil-60.dll","swresample-6.dll","ffmpeg.exe","ffprobe.exe"})
+            if(!RuntimeFileAvailable(name))return true;
+        return false;
+    }
     void LoadGpus() {
+        if(MissingRuntime()) {
+            bool toolsFound=RuntimeFileAvailable("ffmpeg.exe") && RuntimeFileAvailable("ffprobe.exe");
+            start.Text=toolsFound?"GPU 처리 DLL 추가":"필수 구성 설치";
+            Status.Text=toolsFound?"FFmpeg 도구 확인 완료 · GPU 처리용 공유 DLL이 필요합니다":"처음 실행: FFmpeg 구성 설치가 필요합니다";
+            detail.Text=toolsFound?"기존 FFmpeg를 사용합니다. GPU 직접 처리를 위한 DLL만 추가로 설치하세요.":"설치 버튼을 누르면 필요한 구성을 내려받습니다. 기존 FFmpeg 도구는 유지합니다.";
+            return;
+        }
         try {
             using(Process p = new Process {StartInfo=new ProcessStartInfo(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"RTXVideoHDRConvert.exe"),"--list-gpus") {
                 UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,
@@ -204,6 +227,11 @@ internal sealed class HdrWindow : Form
         UseWaitCursor=false;
     }
     internal void StartConversion() {
+        if(MissingRuntime()) {
+            try {Process.Start(new ProcessStartInfo(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"Setup-Runtime.cmd")){UseShellExecute=true});Close();}
+            catch(Exception e) {Status.Text="구성 설치를 시작하지 못했습니다";detail.Text=e.Message;}
+            return;
+        }
         if(Running != null) return;
         try {
             string input=Path.GetFullPath(Clean(Input.Text)), output=Path.GetFullPath(Clean(Output.Text));

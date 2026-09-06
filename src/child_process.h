@@ -15,6 +15,9 @@ public:
     unsigned Wait(DWORD timeoutMs = 60000);
     std::string Capture(size_t maxBytes = 64*1024*1024);
 private:
+    std::string RecordFailure(const char* operation, DWORD error, DWORD waitMs);
+    std::filesystem::path log_;
+    uint64_t writtenBytes_ = 0;
     HANDLE process_ = nullptr, job_ = nullptr, read_ = nullptr, write_ = nullptr;
 };
 std::filesystem::path FindTool(const wchar_t* name, const std::filesystem::path& explicitDirectory);

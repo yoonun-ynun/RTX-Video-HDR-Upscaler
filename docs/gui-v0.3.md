@@ -1,3 +1,9 @@
+# v0.4.0 추가 안내
+
+첫 실행에서 필수 구성 설치 버튼 또는 Setup-Runtime.cmd로 FFmpeg 공유 DLL과 도구를 설치하세요. 날짜가 고정된 공식 BtbN 배포와 SHA256을 사용합니다. 설치 후 GUI가 다시 열립니다. 기본 변환은 GPU 직접 전달 경로를 사용합니다. 기존 영상 선택·품질 저장·GPU 선택·MKV/MP4·취소 방법은 동일합니다.
+
+아래는 이전 버전부터 이어지는 사용 안내입니다.
+
 # RTX Video HDR 업스케일러 GUI v0.3.5
 
 `RTXVideoHDR.exe`를 실행합니다. 같은 폴더의 `RTXVideoHDRConvert.exe`가 실제 변환을 담당하므로 두 실행 파일과 `.config`를 함께 보관하세요. Windows .NET Framework 4.8을 사용하며 별도 서버나 브라우저는 필요하지 않습니다.

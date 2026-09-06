@@ -6,6 +6,29 @@
 #include <sstream>
 #include <thread>
 
+static const char* P010PackSource=R"(
+Texture2D<float4> rgb : register(t0);
+RWByteAddressBuffer packed : register(u0);
+uint q(float x, float lo, float hi) { return uint(clamp(floor(x+0.5),lo,hi))<<6; }
+[numthreads(16,16,1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    uint w,h; rgb.GetDimensions(w,h);
+    uint x=id.x*2,y=id.y*2;
+    if(x>=w || y>=h) return;
+    float cb=0,cr=0;
+    [unroll] for(uint dy=0;dy<2;dy++) {
+        uint pair=0;
+        [unroll] for(uint dx=0;dx<2;dx++) {
+            float3 c=rgb.Load(int3(x+dx,y+dy,0)).rgb;
+            float l=dot(c,float3(0.2627,0.6780,0.0593));
+            pair |= q(64+876*l,64,940)<<(dx*16);
+            cb+=(c.b-l)/(2*(1-0.0593)); cr+=(c.r-l)/(2*(1-0.2627));
+        }
+        packed.Store(((y+dy)*w+x)*2,pair);
+    }
+    packed.Store((w*h+(y/2)*w+x)*2,q(512+224*cb,64,960)|(q(512+224*cr,64,960)<<16));
+})";
+
 static std::string Hex(HRESULT hr) {
     std::ostringstream s;
     s << "0x" << std::hex << std::setw(8) << std::setfill('0') << static_cast<uint32_t>(hr);
@@ -240,6 +263,7 @@ void Pipeline::SetHdr(bool enable) {
     Check(hdrHr_, "NVIDIA HDR extension");
 }
 void Pipeline::Upload(const std::vector<uint8_t>& bytes) {
+    if(p010Pending_) throw Failure(4,"Collect pending P010 before reusing input");
     if (bytes.size() != static_cast<size_t>(width_)*height_*3/2*(input10_ ? 2 : 1)) throw Failure(2,"Input plane size mismatch");
     context_->UpdateSubresource(input_.Get(), 0, nullptr, bytes.data(), width_*(input10_ ? 2 : 1), 0);
 }
@@ -248,8 +272,8 @@ void Pipeline::Blit(unsigned frame) {
     stream.Enable=TRUE; stream.InputFrameOrField=frame; stream.pInputSurface=inputView_.Get();
     Check(videoContext_->VideoProcessorBlt(processor_.Get(), outputView_.Get(), frame, 1, &stream), "VideoProcessorBlt");
 }
-void Pipeline::WaitGpu() {
-    context_->End(completion_.Get()); context_->Flush();
+void Pipeline::WaitGpu(bool issue) {
+    if(issue) {context_->End(completion_.Get()); context_->Flush();}
     auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(15);
     for (;;) {
         BOOL done=FALSE;
@@ -262,6 +286,7 @@ void Pipeline::WaitGpu() {
     }
 }
 std::vector<uint32_t> Pipeline::Process(unsigned frame) {
+    if(p010Pending_) throw Failure(4,"Collect pending P010 before reusing output");
     Blit(frame);
     context_->CopyResource(staging_.Get(), output_.Get());
     WaitGpu();
@@ -281,36 +306,25 @@ std::vector<uint32_t> Pipeline::Process(unsigned frame) {
 }
 
 void Pipeline::ProcessP010(unsigned frame, std::vector<uint16_t>& pixels) {
-    Blit(frame);
-    ReadP010(pixels);
+    SubmitP010(frame);
+    CollectP010(pixels);
 }
 void Pipeline::ReadP010(std::vector<uint16_t>& pixels) {
+    if(p010Pending_) throw Failure(4,"P010 result already pending");
+    PackP010();
+    CollectP010(pixels);
+}
+void Pipeline::SubmitP010(unsigned frame) {
+    if(p010Pending_) throw Failure(4,"P010 result already pending");
+    Blit(frame);
+    PackP010();
+}
+void Pipeline::PackP010() {
     if (!packShader_) {
         // One thread owns a 2x2 block, so every packed 32-bit store is aligned and exclusive.
-        const char* source=R"(
-Texture2D<float4> rgb : register(t0);
-RWByteAddressBuffer packed : register(u0);
-uint q(float x, float lo, float hi) { return uint(clamp(floor(x+0.5),lo,hi))<<6; }
-[numthreads(16,16,1)]
-void main(uint3 id : SV_DispatchThreadID) {
-    uint w,h; rgb.GetDimensions(w,h);
-    uint x=id.x*2,y=id.y*2;
-    if(x>=w || y>=h) return;
-    float cb=0,cr=0;
-    [unroll] for(uint dy=0;dy<2;dy++) {
-        uint pair=0;
-        [unroll] for(uint dx=0;dx<2;dx++) {
-            float3 c=rgb.Load(int3(x+dx,y+dy,0)).rgb;
-            float l=dot(c,float3(0.2627,0.6780,0.0593));
-            pair |= q(64+876*l,64,940)<<(dx*16);
-            cb+=(c.b-l)/(2*(1-0.0593)); cr+=(c.r-l)/(2*(1-0.2627));
-        }
-        packed.Store(((y+dy)*w+x)*2,pair);
-    }
-    packed.Store((w*h+(y/2)*w+x)*2,q(512+224*cb,64,960)|(q(512+224*cr,64,960)<<16));
-})";
+
         ComPtr<ID3DBlob> code,errors;
-        HRESULT hr=D3DCompile(source,std::strlen(source),"p010",nullptr,nullptr,"main","cs_5_0",
+        HRESULT hr=D3DCompile(P010PackSource,std::strlen(P010PackSource),"p010",nullptr,nullptr,"main","cs_5_0",
             D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&code,&errors);
         if(FAILED(hr)) throw Failure(4,errors?std::string(static_cast<const char*>(errors->GetBufferPointer()),errors->GetBufferSize()):"P010 shader compile failed");
         Check(device_->CreateComputeShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&packShader_),"Create P010 shader");
@@ -331,10 +345,57 @@ void main(uint3 id : SV_DispatchThreadID) {
     srv=nullptr;uav=nullptr;
     context_->CSSetShaderResources(0,1,&srv); context_->CSSetUnorderedAccessViews(0,1,&uav,nullptr);
     context_->CopyResource(packedStaging_.Get(),packed_.Get());
-    WaitGpu();
+    context_->End(completion_.Get()); context_->Flush();
+    p010Pending_=true;
+}
+void Pipeline::CollectP010(std::vector<uint16_t>& pixels) {
+    if(!p010Pending_) throw Failure(4,"No pending P010 result");
+    WaitGpu(false);
     pixels.resize(static_cast<size_t>(width_)*height_*3/2);
     D3D11_MAPPED_SUBRESOURCE mapped{};
     Check(context_->Map(packedStaging_.Get(),0,D3D11_MAP_READ,0,&mapped),"Map P010 staging");
     std::memcpy(pixels.data(),mapped.pData,pixels.size()*2);
     context_->Unmap(packedStaging_.Get(),0);
+    p010Pending_=false;
+}
+
+void Pipeline::UploadTexture(ID3D11Texture2D* texture, unsigned slice) {
+    if(p010Pending_) throw Failure(4,"Collect pending P010 before reusing input");
+    D3D11_TEXTURE2D_DESC desc{};texture->GetDesc(&desc);
+    ComPtr<ID3D11Device> owner;texture->GetDevice(&owner);
+    if(owner.Get()!=device_.Get() || slice>=desc.ArraySize || desc.MipLevels!=1 || desc.Width<width_ || desc.Height<height_
+       || desc.Format!=(input10_?DXGI_FORMAT_P010:DXGI_FORMAT_NV12)) throw Failure(4,"Invalid hardware input texture");
+    D3D11_BOX region{0,0,0,width_,height_,1};
+    context_->CopySubresourceRegion(input_.Get(),0,0,0,0,texture,slice,&region);
+}
+void Pipeline::ProcessTexture(unsigned frame, ID3D11Texture2D* destination) {
+    if(p010Pending_) throw Failure(4,"Collect pending P010 before reusing output");
+    D3D11_TEXTURE2D_DESC desc{};destination->GetDesc(&desc);
+    ComPtr<ID3D11Device> owner;destination->GetDevice(&owner);
+    if(owner.Get()!=device_.Get() || desc.Width!=width_ || desc.Height!=height_ || desc.Format!=DXGI_FORMAT_P010
+       || desc.ArraySize!=1 || desc.MipLevels!=1) throw Failure(4,"Invalid hardware output texture");
+    if(!texturePackShader_) {
+        std::string source=P010PackSource;
+        auto replace=[&](const std::string& a,const std::string& b) {auto at=source.find(a);if(at==std::string::npos) throw Failure(4,"P010 shader source mismatch");source.replace(at,a.size(),b);};
+        replace("RWByteAddressBuffer packed : register(u0);","RWTexture2D<unorm float> planeY : register(u0); RWTexture2D<unorm float2> planeUV : register(u1);");
+        replace("packed.Store(((y+dy)*w+x)*2,pair);","planeY[uint2(x,y+dy)]=float(pair & 65535)/65535.0; planeY[uint2(x+1,y+dy)]=float(pair >> 16)/65535.0;");
+        replace("packed.Store((w*h+(y/2)*w+x)*2,q(512+224*cb,64,960)|(q(512+224*cr,64,960)<<16));","planeUV[uint2(x/2,y/2)]=float2(q(512+224*cb,64,960),q(512+224*cr,64,960))/65535.0;");
+        ComPtr<ID3DBlob> code,errors;
+        HRESULT hr=D3DCompile(source.data(),source.size(),"p010-texture",nullptr,nullptr,"main","cs_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&code,&errors);
+        if(FAILED(hr)) throw Failure(4,errors?std::string(static_cast<const char*>(errors->GetBufferPointer()),errors->GetBufferSize()):"Texture shader compile failed");
+        Check(device_->CreateComputeShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&texturePackShader_),"Create texture pack shader");
+    }
+    if(!rgbView_) Check(device_->CreateShaderResourceView(output_.Get(),nullptr,&rgbView_),"Create RGB shader view");
+    D3D11_UNORDERED_ACCESS_VIEW_DESC view{};view.ViewDimension=D3D11_UAV_DIMENSION_TEXTURE2D;
+    ComPtr<ID3D11UnorderedAccessView> y,uv;
+    view.Format=DXGI_FORMAT_R16_UNORM;Check(device_->CreateUnorderedAccessView(destination,&view,&y),"Create P010 Y UAV");
+    view.Format=DXGI_FORMAT_R16G16_UNORM;Check(device_->CreateUnorderedAccessView(destination,&view,&uv),"Create P010 UV UAV");
+    Blit(frame);
+    auto srv=rgbView_.Get();ID3D11UnorderedAccessView* uav[]{y.Get(),uv.Get()};
+    context_->CSSetShader(texturePackShader_.Get(),nullptr,0);
+    context_->CSSetShaderResources(0,1,&srv);context_->CSSetUnorderedAccessViews(0,2,uav,nullptr);
+    context_->Dispatch((width_/2+15)/16,(height_/2+15)/16,1);
+    srv=nullptr;uav[0]=uav[1]=nullptr;
+    context_->CSSetShaderResources(0,1,&srv);context_->CSSetUnorderedAccessViews(0,2,uav,nullptr);
+    context_->Flush();
 }

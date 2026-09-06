@@ -1,6 +1,8 @@
-param([string]$Configuration = 'Release')
+param([string]$Configuration = 'Release', [string]$BuildDirectory, [string]$FFmpegRoot)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
+if (!$BuildDirectory) { $BuildDirectory = Join-Path $repo build }
+$BuildDirectory = [IO.Path]::GetFullPath($BuildDirectory)
 $cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
 if ($cmakeCommand) { $cmakePath = $cmakeCommand.Source }
 else {
@@ -25,6 +27,8 @@ function Invoke-CMake([string[]]$Arguments) {
     $process.WaitForExit()
     if ($process.ExitCode -ne 0) { throw "CMake failed: $($process.ExitCode)" }
 }
-Invoke-CMake @('--fresh', '-S', $repo, '-B', "$repo\build", '-G', 'Visual Studio 17 2022', '-A', 'x64')
-Invoke-CMake @('--build', "$repo\build", '--config', $Configuration)
-if ($Configuration -eq 'Release') { & "$PSScriptRoot\build-gui.ps1" }
+Invoke-CMake @('--fresh', '-S', $repo, '-B', $BuildDirectory, '-G', 'Visual Studio 17 2022', '-A', 'x64', "-DFFMPEG_ROOT=$FFmpegRoot")
+Invoke-CMake @('--build', $BuildDirectory, '--config', $Configuration)
+if ($Configuration -eq 'Release') { & "$PSScriptRoot\build-gui.ps1" -OutputDirectory (Join-Path $BuildDirectory Release) }
+
+if ($FFmpegRoot) { Get-ChildItem -LiteralPath (Join-Path $FFmpegRoot bin) -Filter "*.dll" | Copy-Item -Destination (Join-Path $BuildDirectory $Configuration) }

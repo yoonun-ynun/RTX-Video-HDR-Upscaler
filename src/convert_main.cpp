@@ -1,4 +1,7 @@
 #include "pipeline.h"
+#ifdef RTXHDR_NATIVE
+#include "native_video.h"
+#endif
 #include "child_process.h"
 #include "color.h"
 #include "frame_timing.h"
@@ -122,7 +125,7 @@ int wmain(int argc,wchar_t** argv) {
     bool interactive=argc==1 || (argc==2 && std::wstring(argv[1]).rfind(L"--",0)!=0);
     try {
         std::filesystem::path input,output,toolDirectory;
-        bool assume=false,softwareDecode=false,cpuColor=false,fullVerify=false,diagnostics=false;
+        bool assume=false,softwareDecode=false,cpuColor=false,fullVerify=false,diagnostics=false,serialPipeline=false,pipeVideo=false;
         unsigned adapterIndex=0,maxFrames=0;
         std::wstring bitrate; unsigned cq=18; bool cqSet=false;
         if(argc==1) {
@@ -137,9 +140,9 @@ int wmain(int argc,wchar_t** argv) {
         for(int i=1;i<argc;++i) {
             std::wstring arg=argv[i];
             if(arg==L"--help") {
-                std::cout << "RTX Video HDR Convert v0.3.5\nRTXVideoHDRConvert input.mp4 [--output output.hdr.mkv] [--adapter 0]\n"
+                std::cout << "RTX Video HDR Convert v0.4.0\nRTXVideoHDRConvert input.mp4 [--output output.hdr.mkv] [--adapter 0]\n"
                     "  [--ffmpeg-dir DIRECTORY] [--assume-bt709] [--max-frames N] [--bitrate 40M | --cq 18]\n"
-                    "  [--software-decode] [--cpu-color] [--verify-full] [--diagnostics]\n"
+                    "  [--software-decode] [--cpu-color] [--verify-full] [--diagnostics] [--serial-pipeline] [--pipe-video]\n"
                     "Double-click to choose a file, or drop one file onto this executable.\n"
                     "Test version: progressive 8/10-bit BT.709 limited H.264/HEVC, constant frame rate.\n"
                     "Requires working NVIDIA RTX Video HDR and ffmpeg/ffprobe. Resolution is preserved. Output .mkv (audio copy) or .mp4 (AAC 320k).\n";
@@ -149,6 +152,8 @@ int wmain(int argc,wchar_t** argv) {
             else if(arg==L"--cpu-color") cpuColor=true;
             else if(arg==L"--verify-full") fullVerify=true;
             else if(arg==L"--diagnostics") diagnostics=true;
+            else if(arg==L"--serial-pipeline") serialPipeline=true;
+            else if(arg==L"--pipe-video") pipeVideo=true;
             else if(arg==L"--bitrate" || arg==L"--cq") {
                 if(++i>=argc) throw Failure(2,"Missing rate control value");
                 std::wstring value=argv[i]; size_t end=0;
@@ -198,7 +203,7 @@ int wmain(int argc,wchar_t** argv) {
         std::filesystem::create_directories(FileSystemPath(output.parent_path()));
         run=CreateRunDirectory(output);
         auto ffmpeg=FindTool(L"ffmpeg.exe",toolDirectory),ffprobe=FindTool(L"ffprobe.exe",toolDirectory);
-        std::cout << "RTX Video HDR Convert v0.3.5\nInput: " << Utf8(input.c_str()) << '\n';
+        std::cout << "RTX Video HDR Convert v0.4.0\nInput: " << Utf8(input.c_str()) << '\n';
         auto v=Probe(ffprobe,input,run,assume,maxFrames);
         auto adapters=EnumerateAdapters(); const AdapterInfo* chosen=nullptr;
         for(const auto& a:adapters) if(a.index==adapterIndex && a.desc.VendorId==0x10de && !(a.desc.Flags&DXGI_ADAPTER_FLAG_SOFTWARE)) chosen=&a;
@@ -209,6 +214,57 @@ int wmain(int argc,wchar_t** argv) {
         pipeline.CreateResources();pipeline.SetHdr(true);
         WriteText(run/L"environment.json",pipeline.Report());
         auto encoded=run/L"video.mkv",completed=run/(mp4?L"completed.mp4":L"completed.mkv");
+        double readSeconds=0,processSeconds=0,writeSeconds=0,firstFrameSeconds=0,conversionSeconds=0;
+        uint64_t count=0;
+        ProgressRate rate;ProgressRate::Rates rates{};
+        double lastProgressSeconds=0,lastFrameSeconds=0;
+        bool nativeMode=false;
+#ifdef RTXHDR_NATIVE
+        nativeMode=!pipeVideo && !serialPipeline && !cpuColor && !diagnostics && !softwareDecode;
+#endif
+        const bool overlap=!nativeMode && !serialPipeline && !cpuColor && !diagnostics;
+#ifdef RTXHDR_NATIVE
+        if(nativeMode) {
+            std::cout << "GPU texture decode/HDR/NVENC pipeline active\n" << std::flush;
+            NativeVideo video(pipeline,input,encoded,v.width,v.height,v.input10,v.fpsNum,v.fpsDen,cq,
+                bitrate.empty()?0:std::stoll(bitrate),assume);
+            auto start=std::chrono::steady_clock::now();
+            try {
+            while(!maxFrames || count<maxFrames) {
+                auto stage=std::chrono::steady_clock::now();
+                if(!video.Decode(count))break;
+                v.start=video.StartSeconds();
+                readSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-stage).count();
+                stage=std::chrono::steady_clock::now();
+                video.Encode(count);
+                processSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-stage).count();
+                if(!count)firstFrameSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-launched).count();
+                ++count;
+                double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+                lastFrameSeconds=elapsed;rates=rate.Observe(elapsed,count);
+            if(count==1 || elapsed-lastProgressSeconds>=.5 || count==v.frames) {
+                lastProgressSeconds=elapsed;
+                std::ostringstream progress;
+                progress.setf(std::ios::fixed);progress.precision(1);
+                progress << count << " frames";
+                if(v.frames) progress << " / ~" << v.frames;
+                progress << ", recent " << rates.recent << " fps, average " << rates.average << " fps";
+                if(v.frames>count && rates.recent>0) progress << ", ~" << static_cast<uint64_t>(std::ceil((v.frames-count)/rates.recent)) << "s remaining";
+                std::cout << "\r" << progress.str() << "          " << std::flush;
+            }
+            }
+            if(!count)throw Failure(6,"No decodable frames");
+            ReportStage("video_finalize");video.Finish();
+            } catch(const Failure& e) {
+                throw Failure(e.code,std::string(e.what())+"; native submitted frames="+std::to_string(count)+
+                    "; elapsed seconds="+std::to_string(std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count())+"; see native.log and native-config.json");
+            }
+            conversionSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+            v.frames=count;
+            WriteText(run/L"timing.json","{\"frames\":"+std::to_string(count)+",\"video_start_seconds\":"+std::to_string(static_cast<double>(v.start))+"}\n");
+        } else
+#endif
+        {
         std::vector<std::wstring> encodeArgs{L"-hide_banner",L"-loglevel",L"warning",L"-nostdin",L"-n",
             L"-init_hw_device",L"d3d11va=enc:"+std::to_wstring(adapterIndex),L"-filter_hw_device",L"enc",
             L"-f",L"rawvideo",L"-pixel_format",L"p010le",L"-video_size",std::to_wstring(v.width)+L"x"+std::to_wstring(v.height),
@@ -230,41 +286,54 @@ int wmain(int argc,wchar_t** argv) {
         ChildProcess decoder(ffmpeg,decodeArgs,run/L"decode.log",true,false);
         FrameTiming timing(run/L"decode.log");
         std::vector<uint16_t> p010;
-        double readSeconds=0,processSeconds=0,writeSeconds=0,firstFrameSeconds=0;
         std::vector<uint8_t> nv12(static_cast<size_t>(v.width)*v.height*3/2*(v.input10?2:1));
-        uint64_t count=0;
         auto start=std::chrono::steady_clock::now();
-        ProgressRate rate;
-        ProgressRate::Rates rates{};
-        double lastProgressSeconds=0,lastFrameSeconds=0;
+        bool pending=false;
         for(;;) {
             auto stage=std::chrono::steady_clock::now();
             size_t got=0;
             while(got<nv12.size()) { auto n=decoder.Read(nv12.data()+got,nv12.size()-got); if(!n) break;got+=n; }
-            if(!got) break;
-            if(got!=nv12.size()) throw Failure(6,"Decoder returned a partial frame");
-            v.start=timing.CheckFrame(count,v.width,v.height,v.input10,v.fps,assume);
+            if(!got && !pending) break;
+            if(got && got!=nv12.size()) throw Failure(6,"Decoder returned a partial frame");
+            if(got) v.start=timing.CheckFrame(count+(pending?1:0),v.width,v.height,v.input10,v.fps,assume);
             readSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-stage).count();
             stage=std::chrono::steady_clock::now();
-            pipeline.Upload(nv12);
-            bool sample=diagnostics && (count==0 || count==v.frames/2 || count+1==v.frames);
-            if(cpuColor || sample) {
-                auto rgb=pipeline.Process(static_cast<unsigned>(count));
-                if(cpuColor) p010=ToP010(rgb,v.width,v.height);
-                else pipeline.ReadP010(p010);
-                if(sample) {
-                    auto reference=ToP010(rgb,v.width,v.height);
-                    unsigned worst=0;
-                    for(size_t k=0;k<p010.size();++k) worst=std::max(worst,static_cast<unsigned>(std::abs(int(p010[k]>>6)-int(reference[k]>>6))));
-                    if(worst>1) throw Failure(5,"GPU P010 differs from CPU reference by more than one code");
-                    auto stem=std::string("frame-")+std::to_string(count);
-                    WriteBytes(run/(stem+".rgb10a2"),rgb.data(),rgb.size()*4);
-                    WriteBytes(run/(stem+".p010"),p010.data(),p010.size()*2);
+            if(overlap) {
+                const bool ready=pending;
+                if(ready) pipeline.CollectP010(p010);
+                if(got) {
+                    pipeline.Upload(nv12);
+                    pipeline.SubmitP010(static_cast<unsigned>(count+(ready?1:0)));
                 }
-            } else pipeline.ProcessP010(static_cast<unsigned>(count),p010);
-            processSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-stage).count();
+                pending=got!=0;
+                processSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-stage).count();
+                if(!ready) continue;
+            } else {
+                pipeline.Upload(nv12);
+                bool sample=diagnostics && (count==0 || count==v.frames/2 || count+1==v.frames);
+                if(cpuColor || sample) {
+                    auto rgb=pipeline.Process(static_cast<unsigned>(count));
+                    if(cpuColor) p010=ToP010(rgb,v.width,v.height);
+                    else pipeline.ReadP010(p010);
+                    if(sample) {
+                        auto reference=ToP010(rgb,v.width,v.height);
+                        unsigned worst=0;
+                        for(size_t k=0;k<p010.size();++k) worst=std::max(worst,static_cast<unsigned>(std::abs(int(p010[k]>>6)-int(reference[k]>>6))));
+                        if(worst>1) throw Failure(5,"GPU P010 differs from CPU reference by more than one code");
+                        auto stem=std::string("frame-")+std::to_string(count);
+                        WriteBytes(run/(stem+".rgb10a2"),rgb.data(),rgb.size()*4);
+                        WriteBytes(run/(stem+".p010"),p010.data(),p010.size()*2);
+                    }
+                } else pipeline.ProcessP010(static_cast<unsigned>(count),p010);
+                processSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-stage).count();
+            }
             stage=std::chrono::steady_clock::now();
-            encoder.Write(p010.data(),p010.size()*2);
+            try { encoder.Write(p010.data(),p010.size()*2); }
+            catch(const Failure& e) {
+                throw Failure(e.code,std::string(e.what())+"; fully submitted frames="+std::to_string(count)+
+                    "; failed frame index="+std::to_string(count)+" (zero-based); elapsed seconds="+
+                    std::to_string(std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count()));
+            }
             writeSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-stage).count();
             if(!count) firstFrameSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-launched).count();
             ++count;
@@ -286,11 +355,12 @@ int wmain(int argc,wchar_t** argv) {
         ChildOK(decoder.Wait(),"Decode failed");
         if(!count) throw Failure(6,"No decodable frames");
         v.frames=count;
-        const double conversionSeconds=lastFrameSeconds;
+        conversionSeconds=lastFrameSeconds;
         std::ostringstream timingReport;
         timingReport << "{\"frames\":" << count << ",\"fps\":\"" << v.rate << "\",\"video_start_seconds\":" << static_cast<double>(v.start) << "}\n";
         WriteText(run/L"timing.json",timingReport.str());
         encoder.CloseInput(); ChildOK(encoder.Wait(),"Encode failed");
+        }
         ReportStage(mp4?"mux_aac":"mux_copy");
         std::cout << "Preserving audio and finalizing file...\n" << std::flush;
         std::wostringstream offset;offset.precision(15);offset << -v.start;
@@ -299,6 +369,7 @@ int wmain(int argc,wchar_t** argv) {
             L"-c",L"copy",L"-map_metadata",L"-1",L"-map_chapters",L"-1",L"-avoid_negative_ts",L"disabled"};
         if(maxFrames) {std::wostringstream duration;duration.precision(15);duration << v.frames/v.fps;muxArgs.push_back(L"-t");muxArgs.push_back(duration.str());}
         if(mp4) muxArgs.insert(muxArgs.end(),{L"-c:a",L"aac",L"-b:a",L"320k",L"-tag:v",L"hvc1",L"-movflags",L"+faststart"});
+        if(nativeMode) muxArgs.insert(muxArgs.end(),{L"-bsf:v",L"hevc_metadata=chroma_sample_loc_type=1"});
         muxArgs.push_back(completed.wstring());
         ChildProcess mux(ffmpeg,muxArgs,run/L"mux.log",false,false);
         ChildOK(mux.Wait(INFINITE),"Audio mux failed");
@@ -319,7 +390,7 @@ int wmain(int argc,wchar_t** argv) {
         if(!MoveFileExW(FileSystemPath(completed).c_str(),FileSystemPath(output).c_str(),MOVEFILE_WRITE_THROUGH))
             throw Failure(6,FileError("Cannot finalize output",output,GetLastError()));
         std::ostringstream report;
-        report << "{\"status\":\"completed\",\"test_version\":\"0.3.5\",\"frames\":" << count
+        report << "{\"status\":\"completed\",\"test_version\":\"0.4.0\",\"frames\":" << count
             << ",\"hdr_effect_mae\":" << effect << ",\"input\":" << JsonString(Utf8(input.c_str()))
             << ",\"output\":" << JsonString(Utf8(output.c_str()))
             << ",\"width\":" << v.width << ",\"height\":" << v.height
@@ -332,6 +403,8 @@ int wmain(int argc,wchar_t** argv) {
         std::ostringstream performance;
         performance << ",\"hardware_decode\":" << (softwareDecode?"false":"true")
             << ",\"gpu_color\":" << (cpuColor?"false":"true")
+            << ",\"overlapped_pipeline\":" << (overlap?"true":"false")
+            << ",\"native_gpu_pipeline\":" << (nativeMode?"true":"false")
             << ",\"adapter_index\":" << adapterIndex
             << ",\"container\":\"" << (mp4?"mp4":"mkv") << "\",\"audio_mode\":\"" << (mp4?"aac_320k":"copy") << "\""
             << ",\"full_output_decode_verified\":" << (fullVerify?"true":"false")

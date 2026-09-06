@@ -2,6 +2,7 @@
 #include "child_process.h"
 #include "color.h"
 #include "frame_timing.h"
+#include "progress_rate.h"
 #include <commdlg.h>
 #include <chrono>
 #include <fstream>
@@ -132,7 +133,7 @@ int wmain(int argc,wchar_t** argv) {
         for(int i=1;i<argc;++i) {
             std::wstring arg=argv[i];
             if(arg==L"--help") {
-                std::cout << "RTX Video HDR Convert v0.3\nRTXVideoHDRConvert input.mp4 [--output output.hdr.mkv] [--adapter 0]\n"
+                std::cout << "RTX Video HDR Convert v0.3.4\nRTXVideoHDRConvert input.mp4 [--output output.hdr.mkv] [--adapter 0]\n"
                     "  [--ffmpeg-dir DIRECTORY] [--assume-bt709] [--max-frames N] [--bitrate 40M | --cq 18]\n"
                     "  [--software-decode] [--cpu-color] [--verify-full] [--diagnostics]\n"
                     "Double-click to choose a file, or drop one file onto this executable.\n"
@@ -193,7 +194,7 @@ int wmain(int argc,wchar_t** argv) {
         std::filesystem::create_directories(FileSystemPath(output.parent_path()));
         run=CreateRunDirectory(output);
         auto ffmpeg=FindTool(L"ffmpeg.exe",toolDirectory),ffprobe=FindTool(L"ffprobe.exe",toolDirectory);
-        std::cout << "RTX Video HDR Convert v0.3\nInput: " << Utf8(input.c_str()) << '\n';
+        std::cout << "RTX Video HDR Convert v0.3.4\nInput: " << Utf8(input.c_str()) << '\n';
         auto v=Probe(ffprobe,input,run,assume,maxFrames);
         auto adapters=EnumerateAdapters(); const AdapterInfo* chosen=nullptr;
         for(const auto& a:adapters) if(a.index==adapterIndex && a.desc.VendorId==0x10de && !(a.desc.Flags&DXGI_ADAPTER_FLAG_SOFTWARE)) chosen=&a;
@@ -229,6 +230,9 @@ int wmain(int argc,wchar_t** argv) {
         std::vector<uint8_t> nv12(static_cast<size_t>(v.width)*v.height*3/2*(v.input10?2:1));
         uint64_t count=0;
         auto start=std::chrono::steady_clock::now();
+        ProgressRate rate;
+        ProgressRate::Rates rates{};
+        double lastProgressSeconds=0,lastFrameSeconds=0;
         for(;;) {
             auto stage=std::chrono::steady_clock::now();
             size_t got=0;
@@ -260,20 +264,24 @@ int wmain(int argc,wchar_t** argv) {
             writeSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-stage).count();
             if(!count) firstFrameSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-launched).count();
             ++count;
-            if(count==1 || count%30==0 || count==v.frames) {
-                double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
-                double fps=count/std::max(elapsed,.001);
-                std::cout << "\r" << count << " frames";
-                if(v.frames) std::cout << " / ~" << v.frames;
-                std::cout << ", " << fps << " fps";
-                if(v.frames>count) std::cout << ", ~" << static_cast<uint64_t>((v.frames-count)/fps) << "s remaining";
-                std::cout << "          " << std::flush;
+            double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+            lastFrameSeconds=elapsed;
+            rates=rate.Observe(elapsed,count);
+            if(count==1 || elapsed-lastProgressSeconds>=.5 || count==v.frames) {
+                lastProgressSeconds=elapsed;
+                std::ostringstream progress;
+                progress.setf(std::ios::fixed);progress.precision(1);
+                progress << count << " frames";
+                if(v.frames) progress << " / ~" << v.frames;
+                progress << ", recent " << rates.recent << " fps, average " << rates.average << " fps";
+                if(v.frames>count && rates.recent>0) progress << ", ~" << static_cast<uint64_t>(std::ceil((v.frames-count)/rates.recent)) << "s remaining";
+                std::cout << "\r" << progress.str() << "          " << std::flush;
             }
         }
         ChildOK(decoder.Wait(),"Decode failed");
         if(!count) throw Failure(6,"No decodable frames");
         v.frames=count;
-        const double conversionSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+        const double conversionSeconds=lastFrameSeconds;
         std::ostringstream timingReport;
         timingReport << "{\"frames\":" << count << ",\"fps\":\"" << v.rate << "\",\"video_start_seconds\":" << static_cast<double>(v.start) << "}\n";
         WriteText(run/L"timing.json",timingReport.str());
@@ -303,7 +311,7 @@ int wmain(int argc,wchar_t** argv) {
         if(!MoveFileExW(FileSystemPath(completed).c_str(),FileSystemPath(output).c_str(),MOVEFILE_WRITE_THROUGH))
             throw Failure(6,FileError("Cannot finalize output",output,GetLastError()));
         std::ostringstream report;
-        report << "{\"status\":\"completed\",\"test_version\":\"0.3\",\"frames\":" << count
+        report << "{\"status\":\"completed\",\"test_version\":\"0.3.4\",\"frames\":" << count
             << ",\"hdr_effect_mae\":" << effect << ",\"input\":" << JsonString(Utf8(input.c_str()))
             << ",\"output\":" << JsonString(Utf8(output.c_str()))
             << ",\"width\":" << v.width << ",\"height\":" << v.height
@@ -324,6 +332,7 @@ int wmain(int argc,wchar_t** argv) {
             << ",\"first_frame_seconds\":" << firstFrameSeconds
             << ",\"conversion_seconds\":" << conversionSeconds
             << ",\"processing_fps\":" << count/conversionSeconds
+            << ",\"recent_processing_fps\":" << rates.recent << ",\"recent_window_seconds\":5"
             << ",\"read_seconds\":" << readSeconds << ",\"process_seconds\":" << processSeconds
             << ",\"write_seconds\":" << writeSeconds << "}\n";
         WriteText(run/L"result.json",reportText+performance.str());

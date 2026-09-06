@@ -24,6 +24,7 @@ internal sealed class HdrWindow : Form
     readonly Label detail = new Label();
     internal Process Running;
     internal bool Finished, Succeeded, SawProgress;
+    internal string LastProgress = "";
     internal string Diagnostics { get { return detail.Text + "\n" + log.Text; } }
     bool cancelled, closing;
     bool restoringSettings = true;
@@ -241,9 +242,14 @@ internal sealed class HdrWindow : Form
     }
     void Dispatch(Action action) { if(!IsDisposed && IsHandleCreated) {try {BeginInvoke(action);} catch(InvalidOperationException) {}} }
     void Receive(string line) {
-        Match m=Regex.Match(line,@"(\d+) frames(?: / ~(\d+))?, ([0-9.]+) fps");
+        Match m=Regex.Match(line,@"(\d+) frames(?: / ~(\d+))?, (?:recent )?([0-9.]+) fps(?:, average ([0-9.]+) fps)?(?:, ~(\d+)s remaining)?");
         if(m.Success) {
-            SawProgress=true;Status.Text="HDR 변환 중";detail.Text=line.Trim();
+            SawProgress=true;Status.Text="HDR 업스케일링 중";
+            detail.Text=m.Groups[1].Value+" 프레임"+(m.Groups[2].Success?" / 약 "+m.Groups[2].Value:"");
+            if(m.Groups[4].Success) detail.Text+="  ·  최근 5초 "+m.Groups[3].Value+" fps  ·  누적 평균 "+m.Groups[4].Value+" fps";
+            else detail.Text+="  ·  누적 평균 "+m.Groups[3].Value+" fps";
+            if(m.Groups[5].Success) detail.Text+="  ·  약 "+m.Groups[5].Value+"초 남음";
+            LastProgress=detail.Text;
             double done=Double.Parse(m.Groups[1].Value,CultureInfo.InvariantCulture), total;
             if(Double.TryParse(m.Groups[2].Value,NumberStyles.None,CultureInfo.InvariantCulture,out total) && total>0) {
                 progress.Style=ProgressBarStyle.Blocks;progress.Value=(int)Math.Min(990,done/total*1000);

@@ -26,6 +26,10 @@ static long double Rational(const std::string& value) {
     return a/b;
 }
 static void ChildOK(unsigned code,const char* message) { if(code) throw Failure(6,std::string(message)+"; inspect run logs"); }
+static void ReportStage(const char* stage) {
+    // stdout is a pipe in the GUI. Newlines alone do not flush a redirected stream.
+    std::cout << "\nRTXHDR_STAGE " << stage << '\n' << std::flush;
+}
 static std::wstring ParseBitrate(const std::wstring& value) {
     if(value.empty() || value.front()<L'0' || value.front()>L'9') throw Failure(2,"Invalid bitrate");
     size_t end=0; double n=std::stod(value,&end);
@@ -133,7 +137,7 @@ int wmain(int argc,wchar_t** argv) {
         for(int i=1;i<argc;++i) {
             std::wstring arg=argv[i];
             if(arg==L"--help") {
-                std::cout << "RTX Video HDR Convert v0.3.4\nRTXVideoHDRConvert input.mp4 [--output output.hdr.mkv] [--adapter 0]\n"
+                std::cout << "RTX Video HDR Convert v0.3.5\nRTXVideoHDRConvert input.mp4 [--output output.hdr.mkv] [--adapter 0]\n"
                     "  [--ffmpeg-dir DIRECTORY] [--assume-bt709] [--max-frames N] [--bitrate 40M | --cq 18]\n"
                     "  [--software-decode] [--cpu-color] [--verify-full] [--diagnostics]\n"
                     "Double-click to choose a file, or drop one file onto this executable.\n"
@@ -194,7 +198,7 @@ int wmain(int argc,wchar_t** argv) {
         std::filesystem::create_directories(FileSystemPath(output.parent_path()));
         run=CreateRunDirectory(output);
         auto ffmpeg=FindTool(L"ffmpeg.exe",toolDirectory),ffprobe=FindTool(L"ffprobe.exe",toolDirectory);
-        std::cout << "RTX Video HDR Convert v0.3.4\nInput: " << Utf8(input.c_str()) << '\n';
+        std::cout << "RTX Video HDR Convert v0.3.5\nInput: " << Utf8(input.c_str()) << '\n';
         auto v=Probe(ffprobe,input,run,assume,maxFrames);
         auto adapters=EnumerateAdapters(); const AdapterInfo* chosen=nullptr;
         for(const auto& a:adapters) if(a.index==adapterIndex && a.desc.VendorId==0x10de && !(a.desc.Flags&DXGI_ADAPTER_FLAG_SOFTWARE)) chosen=&a;
@@ -278,6 +282,7 @@ int wmain(int argc,wchar_t** argv) {
                 std::cout << "\r" << progress.str() << "          " << std::flush;
             }
         }
+        if(count) ReportStage("video_finalize");
         ChildOK(decoder.Wait(),"Decode failed");
         if(!count) throw Failure(6,"No decodable frames");
         v.frames=count;
@@ -286,7 +291,8 @@ int wmain(int argc,wchar_t** argv) {
         timingReport << "{\"frames\":" << count << ",\"fps\":\"" << v.rate << "\",\"video_start_seconds\":" << static_cast<double>(v.start) << "}\n";
         WriteText(run/L"timing.json",timingReport.str());
         encoder.CloseInput(); ChildOK(encoder.Wait(),"Encode failed");
-        std::cout << "\nPreserving audio and finalizing file...\n";
+        ReportStage(mp4?"mux_aac":"mux_copy");
+        std::cout << "Preserving audio and finalizing file...\n" << std::flush;
         std::wostringstream offset;offset.precision(15);offset << -v.start;
         std::vector<std::wstring> muxArgs{L"-hide_banner",L"-loglevel",L"warning",L"-nostdin",L"-n",L"-copyts",
             L"-i",encoded.wstring(),L"-itsoffset",offset.str(),L"-i",input.wstring(),L"-map",L"0:v:0",L"-map",L"1:a?",
@@ -296,6 +302,7 @@ int wmain(int argc,wchar_t** argv) {
         muxArgs.push_back(completed.wstring());
         ChildProcess mux(ffmpeg,muxArgs,run/L"mux.log",false,false);
         ChildOK(mux.Wait(INFINITE),"Audio mux failed");
+        ReportStage("verify");
         std::vector<std::wstring> verifyArgs{L"-v",L"error",L"-select_streams",L"v:0",L"-show_entries",
             L"stream=codec_name,profile,width,height,pix_fmt,color_range,color_space,color_transfer,color_primaries,chroma_location,nb_read_frames",
             L"-of",L"default=noprint_wrappers=1",completed.wstring()};
@@ -307,11 +314,12 @@ int wmain(int argc,wchar_t** argv) {
         for(auto item:{"codec_name=hevc","profile=Main 10","pix_fmt=yuv420p10le","color_range=tv","color_space=bt2020nc","color_transfer=smpte2084","color_primaries=bt2020","chroma_location=center"})
             if(verified.find(item)==std::string::npos) throw Failure(5,"Output codec/color verification failed");
         if(fullVerify && verified.find("nb_read_frames="+std::to_string(count)+"\n")==std::string::npos) throw Failure(5,"Output frame count verification failed");
+        ReportStage("finalize");
         // MoveFileEx without REPLACE_EXISTING protects an output created while conversion was running.
         if(!MoveFileExW(FileSystemPath(completed).c_str(),FileSystemPath(output).c_str(),MOVEFILE_WRITE_THROUGH))
             throw Failure(6,FileError("Cannot finalize output",output,GetLastError()));
         std::ostringstream report;
-        report << "{\"status\":\"completed\",\"test_version\":\"0.3.4\",\"frames\":" << count
+        report << "{\"status\":\"completed\",\"test_version\":\"0.3.5\",\"frames\":" << count
             << ",\"hdr_effect_mae\":" << effect << ",\"input\":" << JsonString(Utf8(input.c_str()))
             << ",\"output\":" << JsonString(Utf8(output.c_str()))
             << ",\"width\":" << v.width << ",\"height\":" << v.height

@@ -25,6 +25,8 @@ internal sealed class HdrWindow : Form
     internal Process Running;
     internal bool Finished, Succeeded, SawProgress;
     internal string LastProgress = "";
+    internal readonly List<string> StageHistory = new List<string>();
+    int processingStage;
     internal string Diagnostics { get { return detail.Text + "\n" + log.Text; } }
     bool cancelled, closing;
     bool restoringSettings = true;
@@ -225,6 +227,7 @@ internal sealed class HdrWindow : Form
             // Inherit the native environment without rebuilding .NET's case-insensitive
             // dictionary: some launchers supply both Path and PATH.
             Running=p; Finished=Succeeded=SawProgress=cancelled=false; completedOutput=output; logDirectory="";
+            processingStage=0;StageHistory.Clear();LastProgress="";
             log.Clear(); Busy(true); progress.Style=ProgressBarStyle.Marquee; Status.Text="입력 확인 및 HDR 준비 중…";
             detail.Text="전체 영상을 사전 디코딩하지 않고 변환 중에 검사합니다.";
             p.OutputDataReceived += delegate(object s,DataReceivedEventArgs e) { if(e.Data!=null) Dispatch(delegate {if(Running==p) Receive(e.Data);}); };
@@ -242,8 +245,13 @@ internal sealed class HdrWindow : Form
     }
     void Dispatch(Action action) { if(!IsDisposed && IsHandleCreated) {try {BeginInvoke(action);} catch(InvalidOperationException) {}} }
     void Receive(string line) {
+        if(line.StartsWith("RTXHDR_STAGE ")) {
+            SetProcessingStage(line.Substring(13).Trim());
+            return;
+        }
         Match m=Regex.Match(line,@"(\d+) frames(?: / ~(\d+))?, (?:recent )?([0-9.]+) fps(?:, average ([0-9.]+) fps)?(?:, ~(\d+)s remaining)?");
         if(m.Success) {
+            if(processingStage>0 || cancelled) return;
             SawProgress=true;Status.Text="HDR 업스케일링 중";
             detail.Text=m.Groups[1].Value+" 프레임"+(m.Groups[2].Success?" / 약 "+m.Groups[2].Value:"");
             if(m.Groups[4].Success) detail.Text+="  ·  최근 5초 "+m.Groups[3].Value+" fps  ·  누적 평균 "+m.Groups[4].Value+" fps";
@@ -256,10 +264,37 @@ internal sealed class HdrWindow : Form
             }
             return;
         }
-        if(line.StartsWith("Preserving audio")) {Status.Text="오디오 복사 및 결과 저장 중…";detail.Text="영상 변환을 마쳤습니다. 파일을 마무리하고 있습니다.";}
+        if(line.StartsWith("Preserving audio") && processingStage<2) SetProcessingStage("mux_copy");
         if(line.StartsWith("Logs: ")) logDirectory=line.Substring(6).Trim();
         if(log.TextLength>60000) log.Text=log.Text.Substring(log.TextLength-30000);
         if(!String.IsNullOrWhiteSpace(line)) log.AppendText(line+Environment.NewLine);
+    }
+    void SetProcessingStage(string stage) {
+        int next; string title,message;
+        switch(stage) {
+            case "video_finalize":
+                next=1;title="영상 프레임 처리 완료 · 인코더 마무리 중";
+                message="모든 영상 프레임을 전달했습니다. 인코딩 출력을 마무리하고 있습니다.";break;
+            case "mux_copy":
+                next=2;title="영상 완료 · 오디오 muxing 중";
+                message="오디오 원본 복사 및 영상·오디오 결합 중입니다. 오디오가 없으면 영상 컨테이너만 구성합니다.";break;
+            case "mux_aac":
+                next=2;title="영상 완료 · 오디오 muxing 중";
+                message="오디오 AAC 변환 및 MP4 구성 중입니다. 오디오가 없으면 영상 컨테이너만 구성합니다.";break;
+            case "verify":
+                next=3;title="영상·오디오 처리 완료 · 결과 검사 중";
+                message="출력 파일의 코덱과 HDR 색 정보를 확인하고 있습니다.";break;
+            case "finalize":
+                next=4;title="결과 파일 저장 마무리 중";
+                message="지정한 저장 위치에 최종 파일을 저장하고 있습니다.";break;
+            default:return;
+        }
+        if(cancelled || next<=processingStage) return;
+        processingStage=next;StageHistory.Add(stage);
+        Status.Text=title;detail.Text=message;
+        progress.Style=next==1?ProgressBarStyle.Blocks:ProgressBarStyle.Marquee;
+        if(next==1) progress.Value=1000;
+        log.AppendText(title+Environment.NewLine);
     }
     void Complete(int code) {
         Running.Dispose(); Running=null; Finished=true;

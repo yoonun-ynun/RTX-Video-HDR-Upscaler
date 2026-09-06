@@ -19,4 +19,11 @@ foreach ($case in @(@('mkv','vbr'), @('mp4','cq'), @('mkv','cancel'))) {
     Get-Content -LiteralPath "$screenshot.txt"
     if ($process.ExitCode -ne 0) { throw "GUI test failed: $name" }
 }
+& $compiler /nologo /target:winexe /platform:x64 /codepage:65001 /r:System.Windows.Forms.dll /r:System.Drawing.dll /main:GuiStagesTest /win32manifest:"$repo\src\gui.manifest" /out:"$repo\build\Release\GuiStagesTest.exe" "$repo\src\gui.cs" "$repo\tests\gui-stages.cs"
+if ($LASTEXITCODE -ne 0) { throw 'GUI stage test compilation failed' }
+Copy-Item -LiteralPath "$repo\src\gui.config" -Destination "$repo\build\Release\GuiStagesTest.exe.config"
+$stageImage = Join-Path $run 'mux-stage.png'
+$stageProcess = Start-Process -FilePath "$repo\build\Release\GuiStagesTest.exe" -ArgumentList ('"' + $stageImage + '"') -WindowStyle Hidden -Wait -PassThru
+Get-Content -LiteralPath "$stageImage.txt"
+if ($stageProcess.ExitCode -ne 0) { throw 'GUI stage test failed' }
 Write-Output "GUI tests passed: $run"

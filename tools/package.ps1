@@ -1,4 +1,4 @@
-param([string]$Version = '0.4.0', [string]$OutputDirectory, [string]$BuildDirectory)
+﻿param([string]$Version = '0.4.1', [string]$OutputDirectory, [string]$BuildDirectory)
 $ErrorActionPreference = 'Stop'
 if ($Version -notmatch '^\d+\.\d+(\.\d+)?$') { throw 'Invalid release version' }
 $repo = Split-Path -Parent $PSScriptRoot
@@ -7,7 +7,7 @@ $BuildDirectory = [IO.Path]::GetFullPath($BuildDirectory)
 $cache = Get-Content -LiteralPath (Join-Path $BuildDirectory 'CMakeCache.txt') -Raw
 if ($cache -notmatch '(?m)^FFMPEG_ROOT:PATH=.+') { throw 'Release packaging requires a native FFmpeg build.' }
 $help = & (Join-Path $BuildDirectory 'Release/RTXVideoHDRConvert.exe') --help
-if ($LASTEXITCODE -ne 0 -or ($help -join "`n") -notmatch [regex]::Escape("v$Version")) { throw 'Built engine version does not match package version.' }
+if ($LASTEXITCODE -ne 0 -or ($help -join "`n") -notmatch ('(?m)^RTX Video HDR Convert ' + [regex]::Escape("v$Version") + '\r?$')) { throw 'Built engine version does not match package version.' }
 $destination = if ($OutputDirectory) { [System.IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $repo "release\v$Version" }
 if (Test-Path -LiteralPath $destination) { throw 'Release directory already exists; choose a new version.' }
 New-Item -ItemType Directory -Path $destination | Out-Null
@@ -15,7 +15,7 @@ Copy-Item -LiteralPath "$BuildDirectory\Release\RTXVideoHDRConvert.exe" -Destina
 Copy-Item -LiteralPath "$BuildDirectory\Release\RTXVideoHDR.exe" -Destination "$destination\RTXVideoHDR.exe"
 Copy-Item -LiteralPath "$BuildDirectory\Release\RTXVideoHDR.exe.config" -Destination "$destination\RTXVideoHDR.exe.config"
 Copy-Item -LiteralPath "$repo\src\default-settings.ini" -Destination "$destination\settings.ini"
-Copy-Item -LiteralPath "$repo\docs\performance-native-v0.4.md" -Destination "$destination\test-results.md"
+Copy-Item -LiteralPath "$repo\docs\checkpoint-validation.md" -Destination "$destination\test-results.md"
 Copy-Item -LiteralPath "$repo\docs\gui-v0.3.md" -Destination "$destination\사용법.md"
 Copy-Item -LiteralPath "$repo\docs\performance-v0.2.md" -Destination "$destination\performance-v0.2.md"
 Copy-Item -LiteralPath "$repo\README.md" -Destination "$destination\README.md"

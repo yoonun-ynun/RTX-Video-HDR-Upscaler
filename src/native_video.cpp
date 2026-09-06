@@ -41,6 +41,7 @@ struct NativeVideo::State {
     AVPacket *packet=nullptr,*coded=nullptr;
     int stream=-1;unsigned width,height;bool input10,assume,draining=false,finished=false;
     AVRational rate;long double first=0;
+    uint64_t origin=0;bool seeking=false;
     State(Pipeline& p,unsigned w,unsigned h,bool ten,AVRational r,bool a):pipeline(p),width(w),height(h),input10(ten),assume(a),rate(r) {}
     ~State() {
         av_frame_free(&decoded);av_frame_free(&encoded);av_packet_free(&packet);av_packet_free(&coded);
@@ -112,12 +113,30 @@ NativeVideo::NativeVideo(Pipeline& pipeline,const std::filesystem::path& input,c
     if(!s.decoded || !s.encoded || !s.packet || !s.coded)throw Failure(6,"Allocate native frame/packet");
 }
 NativeVideo::~NativeVideo()=default;
+void NativeVideo::Seek(uint64_t frame,long double firstSeconds) {
+    auto& s=*s_;s.origin=frame;s.first=firstSeconds;
+    if(!frame)return;
+    auto base=s.input->streams[s.stream]->time_base;
+    long double seconds=firstSeconds+frame*static_cast<long double>(s.rate.den)/s.rate.num;
+    Av(av_seek_frame(s.input,s.stream,static_cast<int64_t>(std::floor(seconds*base.den/base.num)),AVSEEK_FLAG_BACKWARD),"Seek checkpoint keyframe");
+    avcodec_flush_buffers(s.decoder);s.draining=false;s.seeking=true;
+}
 bool NativeVideo::Decode(uint64_t index) {
     auto& s=*s_;av_frame_unref(s.decoded);
     for(;;) {
         int result=avcodec_receive_frame(s.decoder,s.decoded);
         if(result==AVERROR_EOF)return false;
-        if(result>=0)break;
+        if(result>=0) {
+            if(s.seeking) {
+                auto base=s.input->streams[s.stream]->time_base;
+                if(s.decoded->best_effort_timestamp==AV_NOPTS_VALUE)throw Failure(2,"Missing seek timestamp");
+                long double tick=static_cast<long double>(base.num)/base.den;
+                long double target=s.first+index*static_cast<long double>(s.rate.den)/s.rate.num;
+                if(s.decoded->best_effort_timestamp*tick<target-std::max(tick*1.1L,.0001L)) {av_frame_unref(s.decoded);continue;}
+                s.seeking=false;
+            }
+            break;
+        }
         if(result!=AVERROR(EAGAIN))Av(result,"Decode hardware frame");
         if(s.draining)throw Failure(6,"Native decoder stalled during flush");
         for(;;) {
@@ -144,7 +163,7 @@ bool NativeVideo::Decode(uint64_t index) {
 }
 void NativeVideo::Encode(uint64_t index) {
     auto& s=*s_;av_frame_unref(s.encoded);Av(av_hwframe_get_buffer(s.frames,s.encoded,0),"Get NVENC texture");
-    s.encoded->pts=index;s.encoded->duration=1;s.encoded->color_range=AVCOL_RANGE_MPEG;
+    s.encoded->pts=index-s.origin;s.encoded->duration=1;s.encoded->color_range=AVCOL_RANGE_MPEG;
     s.encoded->colorspace=AVCOL_SPC_BT2020_NCL;s.encoded->color_primaries=AVCOL_PRI_BT2020;
     s.encoded->color_trc=AVCOL_TRC_SMPTE2084;s.encoded->chroma_location=AVCHROMA_LOC_CENTER;
     s.pipeline.ProcessTexture(static_cast<unsigned>(index),reinterpret_cast<ID3D11Texture2D*>(s.encoded->data[0]));

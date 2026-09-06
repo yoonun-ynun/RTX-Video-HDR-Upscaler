@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -15,7 +15,11 @@ internal sealed class HdrWindow : Form
     internal readonly ComboBox Gpu = new ComboBox(), FormatChoice = new ComboBox();
     sealed class GpuChoice { internal int Index; internal string Name; public override string ToString() {return "GPU " + Index + " · " + Name;} }
     readonly NumericUpDown bitrate = new NumericUpDown(), cq = new NumericUpDown();
+    internal readonly CheckBox Checkpoint = new CheckBox();
+    readonly Label checkpointHint = new Label();
+    bool activeCheckpoint, rememberedCheckpoint;
     readonly CheckBox preview = new CheckBox(), assume = new CheckBox();
+    readonly Button resume = new Button();
     readonly Button start = new Button(), cancel = new Button(), play = new Button(), folder = new Button();
     readonly Button chooseInput = new Button(), chooseOutput = new Button();
     readonly TextBox log = new TextBox();
@@ -42,7 +46,7 @@ internal sealed class HdrWindow : Form
         Text = "RTX Video HDR 업스케일러 · SDR → HDR";
         Font = new Font("맑은 고딕", 10F);
         AutoScaleMode = AutoScaleMode.None;
-        ClientSize = new Size(900, 746); MinimumSize = new Size(916, 785);
+        ClientSize = new Size(900, 786); MinimumSize = new Size(916, 825);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(245, 246, 250); ForeColor = ink;
         AllowDrop = true;
@@ -67,7 +71,7 @@ internal sealed class HdrWindow : Form
             } catch(ArgumentException) { Output.Clear(); } catch(PathTooLongException) { Output.Clear(); }
         };
 
-        GroupBox settings = Group("02   출력 품질 · 자동 저장", 28, 280, 844, 178);
+        GroupBox settings = Group("02   출력 품질 · 재개 설정", 28, 280, 844, 218);
         AddLabel(settings, "인코딩 방식", 18, 34, 95);
         mode.DropDownStyle = ComboBoxStyle.DropDownList;
         mode.Items.AddRange(new object[] { "품질 기준 (CQ)", "평균 비트레이트 (VBR)" });
@@ -109,17 +113,22 @@ internal sealed class HdrWindow : Form
         preview.Text = "시험 변환: 첫 432프레임"; preview.SetBounds(118, 145, 258, 25); settings.Controls.Add(preview);
         assume.Text = "색 정보가 없는 SDR을 BT.709로 간주"; assume.SetBounds(392, 145, 414, 25); settings.Controls.Add(assume);
 
-        SetupButton(start, this, "HDR 업스케일링 시작", 28, 475, 198, delegate { StartConversion(); });
+        Checkpoint.Text="새 변환에서 구간 저장 (재개 지원)";
+        Checkpoint.SetBounds(118, 180, 335, 25);settings.Controls.Add(Checkpoint);
+        checkpointHint.SetBounds(460, 181, 366, 25);settings.Controls.Add(checkpointHint);
+
+        SetupButton(start, this, "HDR 업스케일링 시작", 28, 515, 198, delegate { StartConversion(); });
         start.BackColor = accent; start.ForeColor = Color.White; start.FlatStyle = FlatStyle.Flat; start.FlatAppearance.BorderSize = 0;
-        SetupButton(cancel, this, "취소", 238, 475, 95, delegate { CancelConversion(); }); cancel.Enabled = false;
-        SetupButton(play, this, "결과 재생", 646, 475, 108, delegate { OpenPath(completedOutput); }); play.Enabled = false;
-        SetupButton(folder, this, "저장 폴더", 766, 475, 106, delegate { OpenPath(Path.GetDirectoryName(completedOutput)); }); folder.Enabled = false;
+        SetupButton(cancel, this, "취소", 238, 515, 95, delegate { CancelConversion(); }); cancel.Enabled = false;
+        SetupButton(resume, this, "이어서 변환", 346, 515, 165, delegate { PickResume(); });
+        SetupButton(play, this, "결과 재생", 646, 515, 108, delegate { OpenPath(completedOutput); }); play.Enabled = false;
+        SetupButton(folder, this, "저장 폴더", 766, 515, 106, delegate { OpenPath(Path.GetDirectoryName(completedOutput)); }); folder.Enabled = false;
         play.Anchor = folder.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        Status.SetBounds(28, 525, 844, 26); Status.Text = "변환할 영상을 선택하세요"; Status.Font = new Font(Font, FontStyle.Bold); Controls.Add(Status);
-        progress.SetBounds(28, 561, 844, 10); progress.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        Status.SetBounds(28, 565, 844, 26); Status.Text = "변환할 영상을 선택하세요"; Status.Font = new Font(Font, FontStyle.Bold); Controls.Add(Status);
+        progress.SetBounds(28, 601, 844, 10); progress.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         progress.Maximum = 1000; Controls.Add(progress);
-        detail.SetBounds(28, 584, 844, 25); detail.Text = "하드웨어 디코딩과 GPU 색 변환을 사용합니다."; Controls.Add(detail);
-        log.SetBounds(28, 621, 844, 97); log.Multiline = true; log.ReadOnly = true; log.ScrollBars = ScrollBars.Vertical;
+        detail.SetBounds(28, 624, 844, 25); detail.Text = "하드웨어 디코딩과 GPU 색 변환을 사용합니다."; Controls.Add(detail);
+        log.SetBounds(28, 661, 844, 97); log.Multiline = true; log.ReadOnly = true; log.ScrollBars = ScrollBars.Vertical;
         log.BackColor = Color.White; log.Font = new Font("Consolas", 9F); log.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         Controls.Add(log);
         DragEnter += delegate(object sender, DragEventArgs e) { e.Effect = Running == null && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None; };
@@ -136,6 +145,8 @@ internal sealed class HdrWindow : Form
         mode.SelectedIndex=savedSettings.Mode;
         cq.Value=savedSettings.Cq;bitrate.Value=savedSettings.Bitrate;
         FormatChoice.SelectedIndex=savedSettings.Format;
+        Checkpoint.Checked=savedSettings.Checkpoint;UpdateCheckpointHint();
+        Checkpoint.CheckedChanged += delegate {UpdateCheckpointHint();SaveSettings();};
         mode.SelectedIndexChanged += delegate {SaveSettings();};
         cq.ValueChanged += delegate {SaveSettings();};
         bitrate.ValueChanged += delegate {SaveSettings();};
@@ -146,8 +157,12 @@ internal sealed class HdrWindow : Form
             if(scale!=1F) Scale(new SizeF(scale,scale));
         }
     }
+    void UpdateCheckpointHint() {
+        checkpointHint.Text=Checkpoint.Checked?"영상 약 10초마다 저장 · 추가 처리 비용":"속도 우선 · 중단한 작업은 재개 불가";
+    }
     void SaveSettings() {
         if(restoringSettings) return;
+        savedSettings.Checkpoint=Checkpoint.Checked;
         savedSettings.Mode=mode.SelectedIndex;savedSettings.Cq=cq.Value;
         savedSettings.Bitrate=bitrate.Value;savedSettings.Format=FormatChoice.SelectedIndex;
         GpuChoice choice=Gpu.SelectedItem as GpuChoice;
@@ -221,12 +236,21 @@ internal sealed class HdrWindow : Form
         b.Append('\\',slashes*2); b.Append('"'); return b.ToString();
     }
     void Busy(bool busy) {
-        foreach(Control c in new Control[] {Input,Output,chooseInput,chooseOutput,mode,Gpu,FormatChoice,preview,assume,start}) c.Enabled=!busy;
+        foreach(Control c in new Control[] {Input,Output,chooseInput,chooseOutput,mode,Gpu,FormatChoice,preview,assume,Checkpoint,start}) c.Enabled=!busy;
         cq.Enabled=!busy && mode.SelectedIndex==0; bitrate.Enabled=!busy && mode.SelectedIndex==1;
-        cancel.Enabled=busy; play.Enabled=folder.Enabled=!busy && Succeeded;
+        resume.Enabled=!busy;cancel.Enabled=busy; play.Enabled=folder.Enabled=!busy && Succeeded;
         UseWaitCursor=false;
     }
-    internal void StartConversion() {
+    void PickResume() {
+        using(var picker=new OpenFileDialog()) {
+            picker.Title="이어서 변환할 작업의 checkpoint.txt 선택";
+            picker.Filter="HDR 작업 체크포인트|checkpoint.txt";
+            string recent=Path.Combine(Path.GetDirectoryName(settingsPath),"last-checkpoint.txt");
+            try {if(File.Exists(recent)) {string path=File.ReadAllText(recent,Encoding.UTF8).Trim();if(File.Exists(path)){picker.InitialDirectory=Path.GetDirectoryName(path);picker.FileName=path;}}}catch(IOException){}
+            if(picker.ShowDialog(this)==DialogResult.OK) StartConversion(picker.FileName);
+        }
+    }
+    internal void StartConversion(string checkpoint = null) {
         if(MissingRuntime()) {
             try {Process.Start(new ProcessStartInfo(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"Setup-Runtime.cmd")){UseShellExecute=true});Close();}
             catch(Exception e) {Status.Text="구성 설치를 시작하지 못했습니다";detail.Text=e.Message;}
@@ -234,19 +258,26 @@ internal sealed class HdrWindow : Form
         }
         if(Running != null) return;
         try {
-            string input=Path.GetFullPath(Clean(Input.Text)), output=Path.GetFullPath(Clean(Output.Text));
+            string engine=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"RTXVideoHDRConvert.exe");
+            if(!File.Exists(engine)) throw new Exception("같은 폴더에 RTXVideoHDRConvert.exe가 필요합니다.");
+            string output="",arguments="";
+            if(checkpoint!=null) {
+                if(!File.Exists(checkpoint))throw new Exception("체크포인트를 찾을 수 없습니다.");
+                arguments="--resume "+Quote(Path.GetFullPath(checkpoint));
+            } else {
+            string input=Path.GetFullPath(Clean(Input.Text));output=Path.GetFullPath(Clean(Output.Text));
             if(!File.Exists(input)) throw new Exception("원본 영상 파일을 찾을 수 없습니다.");
             string extension=FormatChoice.SelectedIndex==1?".mp4":".mkv";
             if(!output.EndsWith(extension,StringComparison.OrdinalIgnoreCase)) throw new Exception("저장 파일 확장자를 "+extension+"로 지정하세요.");
             GpuChoice selected=Gpu.SelectedItem as GpuChoice;
             if(selected==null) throw new Exception("사용 가능한 NVIDIA GPU를 선택하세요.");
             if(File.Exists(output)) throw new Exception("저장 위치에 파일이 이미 있습니다. 다른 이름을 지정하세요.");
-            string engine=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"RTXVideoHDRConvert.exe");
-            if(!File.Exists(engine)) throw new Exception("같은 폴더에 RTXVideoHDRConvert.exe가 필요합니다.");
-            string arguments=Quote(input)+" --output "+Quote(output)+" --adapter "+selected.Index;
+            arguments=Quote(input)+" --output "+Quote(output)+" --adapter "+selected.Index;
             arguments += mode.SelectedIndex==0 ? " --cq "+cq.Value.ToString(CultureInfo.InvariantCulture) : " --bitrate "+bitrate.Value.ToString(CultureInfo.InvariantCulture)+"M";
             if(preview.Checked) arguments+=" --max-frames 432";
             if(assume.Checked) arguments+=" --assume-bt709";
+            if(!Checkpoint.Checked) arguments+=" --no-checkpoint";
+            }
             Process p = new Process { StartInfo=new ProcessStartInfo(engine,arguments) {
                 UseShellExecute=false, CreateNoWindow=true, RedirectStandardOutput=true, RedirectStandardError=true,
                 StandardOutputEncoding=Encoding.UTF8, StandardErrorEncoding=Encoding.UTF8,
@@ -254,6 +285,7 @@ internal sealed class HdrWindow : Form
             }};
             // Inherit the native environment without rebuilding .NET's case-insensitive
             // dictionary: some launchers supply both Path and PATH.
+            activeCheckpoint=checkpoint!=null||Checkpoint.Checked;rememberedCheckpoint=false;
             Running=p; Finished=Succeeded=SawProgress=cancelled=false; completedOutput=output; logDirectory="";
             processingStage=0;StageHistory.Clear();LastProgress="";
             log.Clear(); Busy(true); progress.Style=ProgressBarStyle.Marquee; Status.Text="입력 확인 및 HDR 준비 중…";
@@ -273,6 +305,19 @@ internal sealed class HdrWindow : Form
     }
     void Dispatch(Action action) { if(!IsDisposed && IsHandleCreated) {try {BeginInvoke(action);} catch(InvalidOperationException) {}} }
     void Receive(string line) {
+        if(line.StartsWith("RTXHDR_INPUT ")) {Input.Text=line.Substring(13).Trim();return;}
+        if(line.StartsWith("RTXHDR_OUTPUT ")) {completedOutput=line.Substring(14).Trim();FormatChoice.SelectedIndex=completedOutput.EndsWith(".mp4",StringComparison.OrdinalIgnoreCase)?1:0;Output.Text=completedOutput;return;}
+        if(line.StartsWith("RTXHDR_JOB_SETTINGS ")) {
+            string[] fields=line.Substring(20).Split(' ');int index,quality,maximum;decimal bits;
+            if(fields.Length==5&&Int32.TryParse(fields[0],out index)&&Int32.TryParse(fields[1],out quality)&&Decimal.TryParse(fields[2],NumberStyles.None,CultureInfo.InvariantCulture,out bits)&&Int32.TryParse(fields[4],out maximum)) {
+                for(int i=0;i<Gpu.Items.Count;i++)if(((GpuChoice)Gpu.Items[i]).Index==index)Gpu.SelectedIndex=i;
+                cq.Value=Math.Max(cq.Minimum,Math.Min(cq.Maximum,quality));
+                mode.SelectedIndex=bits>0?1:0;if(bits>0)bitrate.Value=Math.Max(bitrate.Minimum,Math.Min(bitrate.Maximum,bits/1000000));
+                assume.Checked=fields[3]=="1";preview.Checked=maximum>0;
+            }
+            return;
+        }
+        if(line.StartsWith("RTXHDR_CHECKPOINT ")) {log.AppendText("재개 지점 저장: "+line.Substring(18).Trim()+" 프레임"+Environment.NewLine);return;}
         if(line.StartsWith("RTXHDR_STAGE ")) {
             SetProcessingStage(line.Substring(13).Trim());
             return;
@@ -293,7 +338,11 @@ internal sealed class HdrWindow : Form
             return;
         }
         if(line.StartsWith("Preserving audio") && processingStage<2) SetProcessingStage("mux_copy");
-        if(line.StartsWith("Logs: ")) logDirectory=line.Substring(6).Trim();
+        if(line.StartsWith("Logs: ")) {
+            logDirectory=line.Substring(6).Trim();
+
+        }
+        RememberCheckpoint();
         if(log.TextLength>60000) log.Text=log.Text.Substring(log.TextLength-30000);
         if(!String.IsNullOrWhiteSpace(line)) log.AppendText(line+Environment.NewLine);
     }
@@ -324,13 +373,37 @@ internal sealed class HdrWindow : Form
         if(next==1) progress.Value=1000;
         log.AppendText(title+Environment.NewLine);
     }
+    void RememberCheckpoint() {
+        if(!activeCheckpoint||rememberedCheckpoint||String.IsNullOrEmpty(logDirectory))return;
+        string path=Path.Combine(logDirectory,"checkpoint.txt");
+        if(!File.Exists(path))return;
+        try {File.WriteAllText(Path.Combine(Path.GetDirectoryName(settingsPath),"last-checkpoint.txt"),path,new UTF8Encoding(false));rememberedCheckpoint=true;}
+        catch(Exception e){log.AppendText("최근 작업 위치 저장 실패: "+e.Message+Environment.NewLine);}
+    }
     void Complete(int code) {
+        RememberCheckpoint();
+        if(code!=0) SaveExitDiagnostic(code);
         Running.Dispose(); Running=null; Finished=true;
         Succeeded=code==0 && File.Exists(completedOutput);
         progress.Style=ProgressBarStyle.Blocks;progress.Value=Succeeded?1000:0;Busy(false);
         Status.Text=Succeeded?"HDR 변환 완료":cancelled?"변환을 취소했습니다":"변환에 실패했습니다";
-        detail.Text=Succeeded?completedOutput:cancelled?"원본은 그대로 보존됩니다. 임시 파일은 진단 폴더에 남아 있습니다.":"아래 오류 내용을 확인하세요. "+logDirectory;
+        bool canResume=!String.IsNullOrEmpty(logDirectory)&&File.Exists(Path.Combine(logDirectory,"checkpoint.txt"));
+        detail.Text=Succeeded?completedOutput:canResume?"‘이어서 변환’에서 checkpoint.txt를 선택하세요. "+logDirectory:
+            !activeCheckpoint?"구간 저장을 끈 작업은 재개할 수 없습니다. 로그: "+logDirectory:"저장된 재개 지점이 없습니다. 로그: "+logDirectory;
         if(closing) Close();
+    }
+    static string Json(string text) {
+        var value=new StringBuilder("\"");
+        foreach(char c in text??"") {if(c=='\\'||c=='"')value.Append('\\').Append(c);else if(c<32)value.Append("\\u").Append(((int)c).ToString("x4"));else value.Append(c);}
+        return value.Append('"').ToString();
+    }
+    void SaveExitDiagnostic(int code) {
+        try {
+            string directory=Directory.Exists(logDirectory)?logDirectory:Path.GetDirectoryName(settingsPath);
+            long free=-1;try {free=new DriveInfo(Path.GetPathRoot(directory)).AvailableFreeSpace;}catch(IOException){}
+            string path=Path.Combine(directory,"gui-exit-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N")+".json");
+            File.WriteAllText(path,"{\"version\":\"0.4.1\",\"cancelled\":"+(cancelled?"true":"false")+",\"exit_code\":"+code+",\"stage\":"+processingStage+",\"last_progress\":"+Json(LastProgress)+",\"available_disk_bytes\":"+free+",\"command\":"+Json(Running.StartInfo.Arguments)+",\"log\":"+Json(log.Text)+"}",new UTF8Encoding(false));
+        }catch(Exception e){log.AppendText("종료 진단 저장 실패: "+e.Message+Environment.NewLine);}
     }
     internal void CancelConversion() {
         if(Running==null) return;
@@ -348,6 +421,7 @@ internal sealed class GuiSettings {
     internal int Mode=0, Format=0, GpuIndex=0;
     internal decimal Cq=18, Bitrate=40;
     internal string GpuName="";
+    internal bool Checkpoint=true;
     internal static GuiSettings Load(string path) {
         GuiSettings settings=new GuiSettings();
         if(!File.Exists(path)) return settings;
@@ -357,6 +431,7 @@ internal sealed class GuiSettings {
             int equal=line.IndexOf('=');if(equal>0) values[line.Substring(0,equal).Trim()]=line.Substring(equal+1).Trim();
         }
         string value; decimal number; int index;
+        if(values.TryGetValue("checkpoint",out value)) {bool enabled;if(Boolean.TryParse(value,out enabled))settings.Checkpoint=enabled;}
         if(values.TryGetValue("mode",out value) && value=="vbr") settings.Mode=1;
         if(values.TryGetValue("container",out value) && value=="mp4") settings.Format=1;
         if(values.TryGetValue("cq",out value) && Decimal.TryParse(value,NumberStyles.Number,CultureInfo.InvariantCulture,out number) && number>=0 && number<=51 && number==Decimal.Truncate(number)) settings.Cq=number;
@@ -370,6 +445,7 @@ internal sealed class GuiSettings {
             +"\r\ncq="+Cq.ToString(CultureInfo.InvariantCulture)
             +"\r\nbitrate_mbps="+Bitrate.ToString(CultureInfo.InvariantCulture)
             +"\r\ncontainer="+(Format==1?"mp4":"mkv")
+            +"\r\ncheckpoint="+(Checkpoint?"true":"false")
             +"\r\ngpu_index="+GpuIndex.ToString(CultureInfo.InvariantCulture)
             +"\r\ngpu_name="+GpuName.Replace("\r","").Replace("\n","")+"\r\n";
         string temporary=path+"."+Guid.NewGuid().ToString("N")+".tmp";

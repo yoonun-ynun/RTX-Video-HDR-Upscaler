@@ -8,6 +8,7 @@ public:
                 int64_t bitrate,bool assume);
     ~NativeVideo();
     bool Decode(uint64_t index);
+    void Seek(uint64_t frame,long double firstSeconds);
     void Encode(uint64_t index);
     void Finish();
     long double StartSeconds() const;

@@ -1,401 +1,387 @@
-﻿# RTX Video HDR 업스케일러
+# RTX Video HDR Upscaler
 
-**이 프로젝트의 코드는 OpenAI Codex를 사용해 작성되었습니다.**
+English | **[한국어 문서 (Korean)](docs/ko/README.md)**
 
-**SDR 동영상 하나를 입력하면 NVIDIA RTX Video HDR로 HDR 업스케일링해 영상 파일로 저장하는 Windows 프로그램입니다.**
+**The code in this project was written using OpenAI Codex.**
 
-GUI에서 영상, GPU, 출력 형식과 품질을 선택할 수 있습니다. 결과는 **HEVC Main10 · BT.2020 · PQ** 형식의 MKV 또는 MP4로 저장됩니다. 모든 변환은 로컬 PC에서 실행합니다.
+**A Windows application that takes one SDR video, applies HDR upscaling with NVIDIA RTX Video HDR, and saves the result as a video file.**
 
-> 현재 버전: **v0.4.1 — 구간 저장 선택·중단 작업 재개·오류 진단 보강**
-> 원본 해상도와 프레임률을 유지합니다. 해상도 업스케일링이나 프레임 보간 기능은 포함하지 않습니다.
+Choose a video, GPU, output format, and quality in the GUI. The output is **HEVC Main10 · BT.2020 · PQ**, saved as MKV or MP4. All conversion runs locally on your PC.
 
-[사용 기술](#무엇을-이용하나요) · [NGX HDR 비교](#ngx-hdrtruehdr과-무엇이-다른가요) · [작동 과정](#어떤-순서로-작동하나요) · [GUI 사용법](#gui-사용법) · [CLI 사용법](#명령줄-사용법) · [문제 해결](#오류가-발생했을-때) · [빌드](#소스에서-빌드하기)
+> Latest public release: **v0.4.1 — optional checkpoints, interrupted job resume, and improved diagnostics**
+> Current source/local build: **v0.4.2-dev — automatic intermediate video cleanup after successful conversion**
+> The original resolution and frame rate are preserved. Spatial resolution upscaling and frame interpolation are not included.
 
-## 주요 기능
+[Technology](#technology) · [NGX HDR comparison](#how-does-this-differ-from-ngx-hdr-truehdr) · [Pipeline](#how-it-works) · [GUI guide](#gui-guide) · [CLI guide](#command-line-usage) · [Troubleshooting](#troubleshooting) · [Build](#building-from-source)
 
-- 파일 선택 또는 드래그 앤 드롭으로 영상 한 개 변환
-- 사용할 NVIDIA GPU 선택 — 디코딩, HDR 처리, 인코딩에 같은 GPU 지정
-- MKV / MP4 저장 및 비트레이트 / CQ 품질 설정
-- 하드웨어 디코딩과 GPU 색 변환
-- 진행 상황, 처리 속도, 추정 남은 시간 표시
-- 시험 변환, 취소, 완료 후 결과 재생·저장 폴더 열기
-- 실패·취소 후 **이어서 변환**: 완료된 영상 구간과 오디오 결합 결과 재사용
-- 원본 보존, 기존 결과 덮어쓰기 방지, 오류 로그 저장
+## Features
 
-## 무엇을 이용하나요?
+- Convert one video through a file picker or drag and drop
+- Select an NVIDIA GPU for decoding, HDR processing, and encoding
+- Save MKV or MP4 with bitrate or CQ quality settings
+- Hardware decoding and GPU color conversion
+- Progress, processing speed, and estimated remaining time
+- Preview conversion, cancellation, and buttons to play the result or open its folder
+- **Resume conversion** after failure or cancellation, reusing saved video segments and muxed output
+- Preserve the source, prevent overwriting existing output, and save error logs
 
-| 구성 요소 | 역할 |
+## Technology
+
+| Component | Role |
 |---|---|
-| **NVIDIA 드라이버의 RTX Video HDR 확장** | SDR 프레임에 HDR 처리를 적용하는 핵심 기능 |
-| **Direct3D 11 / Video Processor** | 선택한 GPU에서 영상 프레임을 처리하고 NVIDIA HDR 확장을 호출 |
-| **D3D11 compute shader** | HDR 처리된 RGB 10비트 픽셀을 인코딩용 P010 형식으로 변환 |
-| **FFmpeg + D3D11VA** | 입력 동영상을 하드웨어 디코딩 |
-| **FFmpeg + NVIDIA NVENC** | HEVC Main10 하드웨어 인코딩, 오디오 처리, MKV/MP4 파일 구성 |
-| **ffprobe** | 입력 정보와 결과 파일의 코덱·색 정보 확인 |
-| **C++20 / C# Windows Forms** | C++ 변환 엔진과 .NET Framework 4.8 기반 GUI |
+| **RTX Video HDR extension in the NVIDIA driver** | Applies HDR processing to SDR frames |
+| **Direct3D 11 / Video Processor** | Processes frames on the selected GPU and invokes the NVIDIA HDR extension |
+| **D3D11 compute shader** | Converts HDR RGB 10-bit pixels into P010 for encoding |
+| **FFmpeg + D3D11VA** | Hardware-decodes the input video |
+| **FFmpeg + NVIDIA NVENC** | Encodes HEVC Main10, processes audio, and creates MKV/MP4 files |
+| **ffprobe** | Reads input information and checks output codecs and color metadata |
+| **C++20 / C# Windows Forms** | C++ conversion engine and .NET Framework 4.8 GUI |
 
-HDR 처리는 드라이버의 D3D11 확장 경로를 사용합니다. RTX Video SDK의 TrueHDR API를 직접 호출하는 구성은 아닙니다. NVEncC의 처리 단계·버퍼 관리 구조를 참고했으며, 실행할 때 NVEncC를 설치하거나 호출하지 않습니다.
+HDR processing uses the driver's D3D11 extension path. The application does not call the RTX Video SDK TrueHDR API directly. NVEncC's processing stages and buffer management informed the design; NVEncC is neither installed nor invoked at runtime.
 
-## NGX HDR(TrueHDR)과 무엇이 다른가요?
+## How does this differ from NGX HDR (TrueHDR)?
 
-여기서 **NGX HDR**은 NVEncC의 `--vpp-ngx-truehdr`처럼 **RTX Video SDK의 TrueHDR 기능을 애플리케이션에서 호출하는 방식**을 뜻합니다. NVEncC 문서는 이 옵션을 RTX Video SDK 기반 SDR→HDR 변환으로 설명합니다. [NVEncC 옵션 문서](https://github.com/rigaya/NVEnc/blob/master/NVEncC_Options.en.md#--vpp-ngx-truehdr-param1value1param2value2)
+Here, **NGX HDR** means **calling RTX Video SDK TrueHDR from an application**, as NVEncC does with `--vpp-ngx-truehdr`. NVEncC documents this option as SDK-based SDR-to-HDR conversion. [NVEncC options](https://github.com/rigaya/NVEnc/blob/master/NVEncC_Options.en.md#--vpp-ngx-truehdr-param1value1param2value2)
 
-둘 다 SDR 영상을 HDR로 확장하는 목적을 갖습니다. **현재 확인할 수 있는 차이는 기능을 호출하는 경로, 조절 가능한 설정, 프레임을 처리하는 구성입니다.** 서로 다른 AI 모델인지, 어느 쪽 화질이 더 좋은지는 이 프로젝트에서 입증하지 않았습니다.
+Both approaches extend SDR video to HDR. **The confirmed differences are the invocation path, exposed controls, and frame-processing architecture.** This project has not established whether they use different AI models or which produces better image quality.
 
-| 비교 항목 | 이 프로그램: 드라이버 RTX Video HDR 경로 | NGX TrueHDR: NVEncC의 SDK 경로 |
+| Comparison | This application: driver RTX Video HDR path | NGX TrueHDR: NVEncC SDK path |
 |---|---|---|
-| HDR 기능 호출 | D3D11 Video Processor에 NVIDIA 전용 HDR 확장 전달 | RTX Video SDK/NGX 기능을 초기화하고 프레임 처리 호출 |
-| HDR 효과 조절 | **NVIDIA App에서 RTX Video HDR의 최대 밝기·중간 회색 밝기·대비·채도 조절 가능.** 이 프로그램에는 별도 효과 조절 UI가 없음. 출력 반영 검증 범위는 아래 참고 | `contrast`, `saturation`, `middlegray`, `maxluminance` 제공 |
-| 인코딩 품질 설정 | CQ·비트레이트는 HDR 처리 후 HEVC 압축 품질을 조절 | TrueHDR 효과 파라미터와 인코더 품질 설정을 구분해서 사용 |
-| 애플리케이션 구성 | 독립 GUI + C++ 엔진 + FFmpeg 공유 라이브러리 및 외부 도구. 앱에서 TrueHDR SDK를 직접 호출하지 않음 | NVEncC의 영상 필터로 SDK 기능을 호출해 인코딩 흐름에 연결 |
-| 파일 저장 | HEVC Main10, MKV/MP4 저장까지 이 프로그램이 처리 | TrueHDR은 처리 필터이며 최종 코덱·컨테이너는 NVEncC 등 호출 프로그램에서 결정 |
+| HDR invocation | Sends an NVIDIA HDR extension to the D3D11 Video Processor | Initializes RTX Video SDK/NGX and invokes frame processing |
+| HDR effect controls | **NVIDIA App provides peak brightness, middle grey, contrast, and saturation controls for RTX Video HDR.** This application has no separate effect-control UI. See the verification limits below | Exposes `contrast`, `saturation`, `middlegray`, and `maxluminance` |
+| Encoding quality | CQ and bitrate control HEVC compression quality after HDR processing | TrueHDR effect parameters and encoder quality settings are configured separately |
+| Application structure | Standalone GUI, C++ engine, FFmpeg shared libraries, and external tools; no direct TrueHDR SDK call | Invokes the SDK as an NVEncC video filter within its encoding pipeline |
+| File output | This application handles HEVC Main10 encoding and MKV/MP4 output | TrueHDR is a processing filter; the calling application, such as NVEncC, determines the codec and container |
 
-NGX 쪽 효과 파라미터와 필터 구성은 [NVEncC 옵션 문서](https://github.com/rigaya/NVEnc/blob/master/NVEncC_Options.en.md#--vpp-ngx-truehdr-param1value1param2value2) 및 [NGX 필터 소스](https://github.com/rigaya/NVEnc/blob/master/NVEncCore/NVEncFilterNGX.cpp)를 기준으로 정리했습니다. 이 프로그램의 드라이버 확장 호출과 픽셀 처리는 [pipeline.cpp](src/pipeline.cpp)에서 확인할 수 있습니다. 비교 확인일은 2026-09-06이며, 외부 프로젝트의 구현은 버전에 따라 달라질 수 있습니다.
+The NGX effect parameters and filter architecture are based on the [NVEncC options](https://github.com/rigaya/NVEnc/blob/master/NVEncC_Options.en.md#--vpp-ngx-truehdr-param1value1param2value2) and [NGX filter source](https://github.com/rigaya/NVEnc/blob/master/NVEncCore/NVEncFilterNGX.cpp). This application's extension calls and pixel processing are in [pipeline.cpp](src/pipeline.cpp). The comparison was checked on 2026-09-06; external implementations may change between versions.
 
-**사용할 때 알아둘 점**
+**Usage notes**
 
-- 이 GUI의 **CQ나 Mbps를 바꿔도 HDR의 최대 밝기·중간 밝기·채도를 직접 지정하는 것은 아닙니다.** 출력 압축 품질을 바꾸는 설정입니다.
-- **HDR 효과는 NVIDIA App의 RTX Video HDR 설정에서 조절할 수 있습니다.** 최대 밝기(peak brightness), 중간 회색 밝기(middle grey), 대비(contrast), 채도(saturation) 슬라이더를 제공합니다. [NVIDIA 공식 안내](https://www.nvidia.com/en-au/geforce/news/nvidia-app-beta-update-rtx-vsr-hdr-controls-and-more/)
-- NVIDIA App의 조절 기능과 이 프로그램의 출력 반영 검증은 구분합니다. 현재 프로그램은 Windows HDR와 드라이버 RTX Video HDR이 작동하는 환경에서 검증했으며, 각 슬라이더 변경이 저장된 HDR 파일에 어떻게 반영되는지는 아직 별도로 측정하지 않았습니다.
-- SDK를 직접 호출하지 않는다는 사실만으로 **드라이버 내부에서도 NGX를 사용하지 않는다**고 판단할 수는 없습니다. 내부 모델·알고리즘의 동일성 또는 차이는 확인되지 않았습니다.
-- SDK라는 이유로 오래된 모델이라고 보거나, 드라이버 경로라는 이유로 화질·속도가 더 좋다고 단정하지 않습니다. 비교하려면 같은 입력 프레임, GPU·드라이버, HDR 설정, 색 변환 및 인코딩 조건을 맞춰야 합니다. 기존 성능 기록은 이 프로그램 자체의 측정이며 NGX HDR과의 비교 벤치마크가 아닙니다.
+- **Changing CQ or Mbps in this GUI does not directly set HDR peak brightness, midtone brightness, or saturation.** These settings control output compression quality.
+- **Adjust the HDR effect in NVIDIA App's RTX Video HDR settings.** It provides sliders for peak brightness, middle grey, contrast, and saturation. [NVIDIA announcement](https://www.nvidia.com/en-au/geforce/news/nvidia-app-beta-update-rtx-vsr-hdr-controls-and-more/)
+- NVIDIA App's controls and verification of their effect on this application's output are separate matters. The application has been tested with Windows HDR and driver RTX Video HDR working, but the effect of each slider on saved HDR files has not yet been measured separately.
+- Not calling the SDK directly does **not** establish that the driver does not use NGX internally. Whether the internal models or algorithms are the same remains unverified.
+- The SDK path should not be assumed to use an older model, nor the driver path assumed to offer better quality or speed. A comparison must match input frames, GPU, driver, HDR settings, color conversion, and encoding settings. Existing performance records measure this application itself; they are not benchmarks against NGX HDR.
 
-또한 **HDR 확장과 해상도 확대는 별개 기능**입니다. NVIDIA는 RTX Video SDK의 Super Resolution과 SDR→HDR 톤 매핑을 구분해 설명합니다. 이 프로그램의 “HDR 업스케일링”은 SDR→HDR 처리를 뜻하며 픽셀 해상도는 유지합니다. [NVIDIA RTX Video SDK 안내](https://developer.nvidia.com/rtx-video-sdk/getting-started)
+**HDR expansion and spatial upscaling are separate features.** NVIDIA distinguishes Super Resolution from SDR-to-HDR tone mapping in the RTX Video SDK. In this application, “HDR upscaling” means SDR-to-HDR processing while preserving pixel resolution. [NVIDIA RTX Video SDK overview](https://developer.nvidia.com/rtx-video-sdk/getting-started)
 
-## 어떤 순서로 작동하나요?
+## How it works
 
 ```mermaid
 flowchart TD
-    A[SDR 동영상 선택] --> B[입력 헤더 확인 · HDR 효과 검사]
-    B --> C[D3D11VA 하드웨어 디코딩]
-    C --> D[변환 중 프레임 시간축 검사]
-    D --> E[D3D11 Video Processor · RTX Video HDR]
-    E --> F[GPU에서 RGB 10비트 → P010 변환]
-    F --> G[NVENC로 HEVC Main10 인코딩]
-    G --> H[오디오 처리 · MKV 또는 MP4 구성]
-    H --> I[출력 정보 확인 후 최종 파일 저장]
+    A[Select SDR video] --> B[Check input headers and HDR effect]
+    B --> C[D3D11VA hardware decoding]
+    C --> D[Validate frame timestamps during conversion]
+    D --> E[D3D11 Video Processor and RTX Video HDR]
+    E --> F[Convert RGB 10-bit to P010 on GPU]
+    F --> G[Encode HEVC Main10 with NVENC]
+    G --> H[Process audio and create MKV or MP4]
+    H --> I[Check output information and save final file]
 ```
 
-1. **입력과 실행 환경을 확인합니다.** 코덱, 해상도, 색 정보와 프레임률을 읽습니다. 별도의 시험 패턴에 HDR을 끄고 켜서 결과 차이가 있는지도 확인합니다. 차이가 충분하지 않으면 변환을 중단합니다.
-2. **실제 변환에 필요한 프레임을 디코딩합니다.** 기본값은 D3D11VA 하드웨어 디코딩입니다. 시작 전에 영상 전체를 다시 디코딩하는 검사는 하지 않습니다.
-3. **디코딩한 프레임의 시간축을 검사합니다.** 프레임 번호, 타임스탬프, 크기, 색 정보 등을 순서대로 확인합니다. 가변·불연속 시간축 등 지원하지 않는 입력을 발견하면 중단합니다.
-4. **GPU에서 HDR 처리와 색 변환을 수행합니다.** 드라이버 HDR 출력의 RGB 픽셀을 BT.2020/PQ로 해석하고, GPU 셰이더로 limited-range P010에 담습니다. P010은 10비트 YUV 4:2:0 데이터를 담는 픽셀 형식입니다.
-5. **인코딩과 저장을 마무리합니다.** NVENC로 영상을 인코딩하고 오디오를 결합합니다. 코덱·색 태그·크기를 확인한 뒤 최종 결과 파일을 만듭니다.
+1. **Check the input and environment.** Read the codec, resolution, color metadata, and frame rate. Process a separate test pattern with HDR off and on; stop if the difference is insufficient.
+2. **Decode the frames needed for conversion.** D3D11VA hardware decoding is the default. The application does not decode the entire input again before starting.
+3. **Validate decoded frame timing.** Check frame indices, timestamps, dimensions, color metadata, and related information in sequence. Stop on unsupported inputs, including variable or discontinuous timelines.
+4. **Apply HDR processing and color conversion on the GPU.** Interpret the driver's HDR RGB output as BT.2020/PQ and use a GPU shader to produce limited-range P010, a pixel format for 10-bit YUV 4:2:0 data.
+5. **Finish encoding and saving.** Encode with NVENC, combine the audio, and check the codec, color tags, and dimensions before publishing the final file.
 
-기본 경로는 FFmpeg 공유 라이브러리와 같은 D3D11 장치를 사용합니다. 디코딩 텍스처 → HDR → P010 텍스처 → NVENC로 연결하며, 영상 프레임을 CPU로 읽어오지 않습니다. 8개 NVENC surface와 4프레임 지연으로 처리를 겹칩니다. 오디오 결합과 출력 확인에는 외부 FFmpeg/ffprobe를 사용합니다. `--pipe-video`는 이전의 파이프 처리 경로를 선택합니다. 전체 출력 재디코딩 검사는 기본 실행에서 생략하며 개발용 옵션으로 선택할 수 있습니다.
+The default path uses FFmpeg shared libraries and the same D3D11 device. It connects decoded textures → HDR → P010 textures → NVENC without reading video frames back to the CPU. Eight NVENC surfaces and a four-frame delay allow work to overlap. External FFmpeg/ffprobe handle audio muxing and output checks. `--pipe-video` selects the earlier pipe path. A full decode of the output is omitted by default and can be enabled for development validation.
 
-## 실행에 필요한 환경
+## Requirements
 
-- **Windows x64**, **.NET Framework 4.8**
-- 이 프로그램의 HDR 효과 검사를 통과하는 **NVIDIA RTX GPU와 드라이버 환경**
-- **Windows HDR 및 NVIDIA RTX Video HDR이 작동하는 설정**
-- D3D11VA와 `hevc_nvenc`를 지원하는 **ffmpeg.exe**, **ffprobe.exe**
-- 결과를 올바르게 감상할 수 있는 **HDR 디스플레이와 HDR 지원 플레이어**
+- **Windows x64** and **.NET Framework 4.8**
+- An **NVIDIA RTX GPU and driver environment** that pass this application's HDR effect check
+- Working **Windows HDR and NVIDIA RTX Video HDR settings**
+- **ffmpeg.exe** and **ffprobe.exe** with D3D11VA and `hevc_nvenc` support
+- An **HDR display and HDR-capable player** to view the result correctly
 
-첫 실행의 **필수 구성 설치** 버튼 또는 `Setup-Runtime.cmd`를 실행하면 FFmpeg 공유 DLL과 ffmpeg/ffprobe가 프로그램 옆에 설치됩니다. 인터넷 연결이 필요하며 날짜 고정 URL의 ZIP을 SHA256 검증한 뒤 사용합니다. 설치는 프로그램 폴더 안에서만 이루어지고 관리자 권한이나 PATH 변경은 필요하지 않습니다. CLI에서는 `--ffmpeg-dir`로 도구 폴더를 지정할 수도 있습니다. 프로그램은 Windows HDR나 NVIDIA App 설정을 변경하지 않습니다.
+Use the first-run **Install required components** button or `Setup-Runtime.cmd` to install FFmpeg shared DLLs and ffmpeg/ffprobe beside the application. An internet connection is required. The installer verifies a ZIP from a date-pinned URL with SHA256. Installation stays inside the application folder; administrator privileges and PATH changes are unnecessary. The CLI also accepts `--ffmpeg-dir`. The application does not change Windows HDR or NVIDIA App settings.
 
-검증 환경은 RTX 5080 / RTX 4060, NVIDIA 드라이버 616.56, FFmpeg 공유 라이브러리 8.1.2 및 외부 도구 8.0/8.1.2입니다. 드라이버 확장 동작은 GPU·드라이버·디스플레이 설정에 영향을 받을 수 있으며, 모든 조합의 호환성을 보장하지 않습니다.
+Tested configurations include RTX 5080 / RTX 4060, NVIDIA driver 616.56, FFmpeg shared libraries 8.1.2, and external tools 8.0/8.1.2. Extension behavior can depend on the GPU, driver, and display settings; compatibility with every combination is not guaranteed.
 
-## GUI 사용법
+## GUI guide
 
-### 1. 프로그램 실행
+The GUI currently uses Korean labels. Control names below are translated for reference; the [Korean guide](docs/ko/README.md#gui-사용법) uses the labels shown in the application.
 
-[GitHub Releases](https://github.com/yoonun-ynun/RTX-Video-HDR-Upscaler/releases/latest)에서 Windows x64 ZIP을 내려받아 압축을 풀고 **`RTXVideoHDR.exe`**를 실행합니다. 소스만 받은 경우에는 아래 [빌드 방법](#소스에서-빌드하기)을 따르세요.
+### 1. Launch the application
 
-배포 ZIP에는 GUI, 변환 엔진, 기본 설정, 문서와 구성 설치 도구가 포함됩니다. FFmpeg 바이너리를 재배포하지 않으며, 설치 도구가 BtbN의 공식 GitHub 배포에서 직접 내려받습니다. 프로그램 폴더와 PATH에 있는 FFmpeg 도구를 먼저 확인해 그대로 사용합니다. 일반 단일 실행 파일 배포에 GPU 처리용 DLL이 없으면 DLL 추가만 안내합니다. 설치 후 GUI가 다시 열립니다. 원격 파일을 받기 어려운 환경에서는 날짜 고정 ZIP을 따로 받아 `tools/setup-runtime.ps1 -Archive 경로 -Destination 프로그램폴더`로 설치할 수 있습니다. 시험 영상과 개인 설정은 포함하지 않습니다.
+Download and extract the Windows x64 ZIP from [GitHub Releases](https://github.com/yoonun-ynun/RTX-Video-HDR-Upscaler/releases/latest), then run **`RTXVideoHDR.exe`**. If you downloaded only the source, follow [Building from source](#building-from-source).
 
-다음 파일은 같은 폴더에 보관합니다.
+The ZIP includes the GUI, conversion engine, default settings, documentation, and runtime installer. It does not redistribute FFmpeg binaries; the installer downloads them directly from BtbN's official GitHub distribution. Existing FFmpeg tools in the application folder or PATH are checked and reused first. If a typical standalone executable installation lacks the GPU-processing DLLs, the GUI asks only for the missing DLLs. The GUI reopens after installation. For environments with restricted downloads, obtain the date-pinned ZIP separately and run `tools/setup-runtime.ps1 -Archive PATH -Destination APPLICATION_FOLDER`. Test videos and personal settings are not included.
+
+Keep these files together:
 
 ```text
 RTXVideoHDR.exe                 GUI
-RTXVideoHDR.exe.config          GUI 실행 설정
-settings.ini                   출력 품질 설정 — 자동 저장
-RTXVideoHDRConvert.exe          실제 변환 엔진
-Setup-Runtime.cmd              첫 실행 구성 설치
-tools/                         설치 스크립트와 검증 해시
-native-runtime.required        GUI의 구성 확인 표시 파일
-avcodec-62.dll 등               설치 도구가 받는 공유 라이브러리
-ffmpeg.exe / ffprobe.exe        설치 도구가 받는 오디오 결합·검사 도구
+RTXVideoHDR.exe.config          GUI runtime configuration
+settings.ini                   Output quality settings, saved automatically
+RTXVideoHDRConvert.exe          Conversion engine
+Setup-Runtime.cmd              First-run runtime installer
+tools/                         Installer scripts and verification hashes
+native-runtime.required        Marker used by the GUI's runtime check
+avcodec-62.dll, etc.            Shared libraries downloaded by the installer
+ffmpeg.exe / ffprobe.exe        Muxing and inspection tools downloaded by the installer
 ```
 
-### 2. 영상과 출력 설정 선택
+### 2. Choose the video and output settings
 
-1. **원본 영상 → 찾아보기**로 파일을 선택합니다. 창에 파일 하나를 끌어놓아도 됩니다.
-2. **저장 위치**를 확인합니다. 기본값은 원본 옆의 `원본이름.hdr.mkv`입니다. 영상을 바꾸면 수동 지정했던 경로도 새 원본 옆의 HDR 파일명으로 갱신되며, 선택한 MKV/MP4 형식은 유지됩니다.
-3. **사용할 GPU**에서 NVIDIA GPU를 선택합니다. 같은 모델이 여러 개라면 GPU 번호로 구분합니다.
-4. **저장 형식**과 **인코딩 방식**을 선택합니다.
-5. **HDR 업스케일링 시작**을 누릅니다.
+1. Select a file with **Source video → Browse**, or drop one file onto the window.
+2. Check **Output location**. The default is `source-name.hdr.mkv` beside the source. Changing the input resets even a manually chosen output path to the new source's HDR filename, while preserving the selected MKV/MP4 format.
+3. Select an NVIDIA GPU under **GPU to use**. GPU indices distinguish adapters with the same model name.
+4. Choose the **Output format** and **Encoding mode**.
+5. Click **Start HDR upscaling**.
 
-완료 후 **결과 재생**이나 **저장 폴더** 버튼을 사용할 수 있습니다. 작업 중 **취소**를 누르거나 창을 닫으면 현재 변환을 중단합니다. 원본은 변경하지 않으며 임시 파일은 진단을 위해 남습니다.
+After completion, use **Play result** or **Output folder**. Clicking **Cancel** or closing the window during conversion stops the current job. The source is not modified. Failed or canceled jobs retain temporary videos for resuming; successful jobs automatically remove large intermediates.
 
-### 영상 완료 이후의 상태 표시
+### Status after video processing finishes
 
-마지막 프레임을 처리한 뒤에도 인코더 출력, 오디오, 컨테이너 작업이 남을 수 있습니다. GUI는 다음 단계를 구분해 표시합니다.
+After the last frame, encoder output, audio processing, and container work may remain. The GUI distinguishes these stages:
 
-1. **영상 프레임 처리 완료 · 인코더 마무리 중** — 프레임 처리 막대는 100%로 표시합니다.
-2. **영상 완료 · 오디오 muxing 중** — MKV는 오디오 복사, MP4는 AAC 변환과 파일 구성을 진행합니다. 오디오가 없으면 영상 컨테이너만 구성합니다.
-3. **영상·오디오 처리 완료 · 결과 검사 중** — 코덱과 HDR 색 정보를 검사합니다.
-4. **결과 파일 저장 마무리 중** — 최종 경로에 파일을 저장합니다.
-5. **HDR 변환 완료** — 엔진이 성공 종료하고 최종 파일이 존재할 때 표시합니다.
+1. **Video frames processed · Finalizing encoder** — frame progress shows 100%.
+2. **Video complete · Muxing audio** — MKV copies audio; MP4 converts to AAC and builds the file. Without audio, only the video container is created.
+3. **Video and audio processed · Checking output** — checks codecs and HDR color metadata.
+4. **Finalizing output file** — saves the file at its final path.
+5. **Output saved · Cleaning intermediate files** — the v0.4.2-dev build removes large temporary files and keeps logs.
+6. **HDR conversion complete** — displayed after the engine exits successfully and the final file exists.
 
-오디오 muxing부터 최종 저장까지는 FPS와 영상 기준 남은 시간을 숨기고 작업 중 표시를 사용합니다. 각 단계 알림은 엔진에서 즉시 전달하므로 이전 FPS 화면이 출력 버퍼에 묶여 남는 문제를 방지합니다.
+From audio muxing through final saving, the GUI hides FPS and video-based time estimates and shows an activity indicator. The engine flushes stage notifications immediately so buffered output does not leave stale FPS information on screen.
 
-### 처리 속도(FPS) 표시
+### Processing speed (FPS)
 
-- **최근 5초 FPS**: 최근 5초 동안 처리한 프레임 수 ÷ 5초. 시작한 지 5초 미만이면 실제 경과 구간으로 계산합니다.
-- **누적 평균 FPS**: 프레임 처리 루프 시작부터 처리한 전체 프레임 수 ÷ 경과 시간.
-- **남은 시간**: 추정 잔여 프레임 수를 최근 처리 속도로 나눈 값입니다. 마지막 오디오 처리·파일 마무리 시간은 포함하지 않습니다.
+- **Recent 5-second FPS**: frames processed in the last five seconds divided by five. During the first five seconds, the actual elapsed interval is used.
+- **Cumulative average FPS**: all frames processed since the frame loop started, divided by elapsed time.
+- **Remaining time**: estimated remaining frames divided by recent processing speed. Final audio processing and file finalization are excluded.
 
-두 수치는 입력 영상의 재생 프레임률이 아닌 변환 처리량입니다. 타이머는 단조 증가 시계를 사용하며, 디코딩 결과 읽기·시간축 검사·HDR 처리·색 변환을 거쳐 인코더에 전달한 프레임을 셉니다. GPU 연산만의 속도나 최종 파일에 기록된 프레임 수를 뜻하지 않습니다. 디코딩·GPU·파이프 대기도 경과 시간에 포함됩니다. 초기 헤더 확인/HDR 효과 검사와 마지막 인코더 종료·오디오 처리·파일 마무리는 실시간 FPS 계산 범위 밖입니다.
+Both values measure conversion throughput, not the source playback frame rate. A monotonic clock counts frames delivered to the encoder after decoding, timestamp validation, HDR processing, and color conversion. The values are neither GPU-only speed nor the number of frames finalized in the output file. Decode, GPU, and pipe waits count toward elapsed time. Initial header/HDR checks and final encoder shutdown, audio processing, and file finalization are outside the live FPS calculation.
 
-이전 버전의 FPS는 누적 평균만 표시했습니다. 예를 들어 초반 100fps 이후 50fps로 일정하게 처리하면 최근 속도는 50fps여도 누적 평균은 한동안 계속 내려갑니다. 따라서 누적 평균만으로 현재 속도가 떨어지고 있다고 판단할 수 없습니다. 처음부터 처리량과 대기 시간이 모두 일정하면 누적 평균이 지속적으로 내려가지는 않습니다.
+Earlier versions displayed only the cumulative average. For example, after starting at 100 fps and settling at 50 fps, the recent rate stays at 50 fps while the average continues to decline for a while. A falling average alone does not establish that current throughput is falling. If throughput and waiting time are constant from the start, the average should not keep declining.
 
-화면은 처리된 프레임이 나올 때 약 0.5초 간격으로 갱신합니다. 한 프레임 처리가 오래 막히면 다음 프레임이 완료될 때까지 마지막 측정값이 표시됩니다.
+The display updates roughly every 0.5 seconds when a processed frame becomes available. If one frame stalls for a long time, the previous measurement remains visible until the next frame completes.
 
-### MKV와 MP4의 차이
+### MKV versus MP4
 
-MKV와 MP4는 파일을 담는 **컨테이너**입니다. 둘 다 영상 코덱은 HEVC Main10이며 HDR 색 형식도 같습니다.
+MKV and MP4 are **containers**. Both use HEVC Main10 with the same HDR color format.
 
-| 설정 | MKV | MP4 |
+| Setting | MKV | MP4 |
 |---|---|---|
-| 영상 | HEVC Main10 / BT.2020 / PQ | HEVC Main10 / BT.2020 / PQ |
-| 오디오 | 원본 스트림 복사 | AAC 320 kbps 목표로 재인코딩 |
-| 특징 | 오디오 재압축 없이 보존 | hvc1 태그와 faststart 적용 |
+| Video | HEVC Main10 / BT.2020 / PQ | HEVC Main10 / BT.2020 / PQ |
+| Audio | Original stream copy | Re-encoded to AAC with a 320 kbps target |
+| Characteristics | Preserves audio without recompression | Uses the hvc1 tag and faststart |
 
-### 품질 설정
+### Quality settings
 
-| 방식 | GUI 설정 | 의미 |
+| Mode | GUI setting | Meaning |
 |---|---|---|
-| **품질 기준 (CQ)** | 기본 **18**, 범위 0~51 | 낮을수록 높은 품질과 큰 파일을 지향합니다. 장면에 따라 비트레이트가 달라집니다. |
-| **평균 비트레이트 (VBR)** | Mbps 단위 입력 | 지정한 평균 비트레이트를 목표로 인코딩합니다. 예: 40 = 40 Mbps |
+| **Quality-based (CQ)** | Default **18**, range 0–51 | Lower values target higher quality and larger files. Bitrate varies by scene. |
+| **Average bitrate (VBR)** | Value in Mbps | Targets the specified average bitrate; for example, 40 means 40 Mbps. |
 
-비트레이트가 너무 낮으면 압축으로 화질이 떨어질 수 있습니다. 다만 높은 값이 원본에 없는 디테일을 복원하지는 않습니다. VBR 값은 고정 비트레이트나 최저 화질 보장이 아니며, 40 Mbps는 사용 예시입니다. CQ와 VBR은 하나를 선택합니다.
+A bitrate that is too low can reduce image quality through compression. Higher values do not recover detail absent from the source. VBR is neither a constant bitrate nor a minimum quality guarantee; 40 Mbps is an example. Choose either CQ or VBR.
 
-### 설정 자동 저장
+### Automatic settings persistence
 
-출력 품질 설정은 실행 파일 옆의 **`settings.ini`**에 변경 즉시 저장되며 다음 실행 때 복원됩니다.
+Output quality settings are saved immediately to **`settings.ini`** beside the executable and restored on the next launch:
 
-- 인코딩 방식(CQ/VBR), CQ 값, 평균 비트레이트
-- 저장 형식(MKV/MP4), 선택한 GPU 번호와 이름
+- Encoding mode (CQ/VBR), CQ value, and average bitrate
+- Output format (MKV/MP4), selected GPU index and name
+- The checkpoint preference described under [Resuming failed or canceled jobs](#resuming-failed-or-canceled-jobs)
 
-시험 변환과 색 정보 간주 옵션은 입력별 설정으로 다음 실행 때 초기화됩니다. 원본 영상·저장 경로는 설정 파일에 저장하지 않습니다. 저장한 GPU를 찾지 못하면 사용 가능한 첫 GPU를 선택하고, 잘못된 설정값은 기본값으로 대체합니다. 설정을 쓸 수 없는 폴더에서는 GUI 로그에 저장 실패를 표시합니다.
+Preview conversion and the assumed-color option are input-specific and reset on each launch. Source and output paths are not stored in the settings file. If the saved GPU is unavailable, the first available GPU is selected. Invalid values fall back to defaults. A settings write failure is shown in the GUI log.
 
-설정을 초기화하려면 프로그램을 종료한 뒤 `settings.ini`를 삭제하세요. 새 버전 폴더로 옮길 때 기존 `settings.ini`를 복사하면 설정을 이어서 사용할 수 있습니다.
+To reset settings, close the application and delete `settings.ini`. Copy your existing `settings.ini` when moving to a new version's folder to retain your preferences.
 
-### 추가 옵션
+### Additional options
 
-- **시험 변환: 첫 432프레임** — 짧은 결과를 먼저 확인합니다. 길이는 입력 프레임률에 따라 달라집니다. 71.928fps에서는 약 6초, 30fps에서는 14.4초입니다.
-- **색 정보가 없는 SDR을 BT.709로 간주** — 색 태그가 빠진 확실한 SDR 영상에만 사용합니다. 확인된 다른 색공간이나 HDR 입력을 강제로 변환하는 옵션은 아닙니다.
+- **Preview conversion: first 432 frames** — inspect a short result first. Duration depends on the source rate: about 6 seconds at 71.928 fps or 14.4 seconds at 30 fps.
+- **Assume BT.709 for untagged SDR** — use only for known SDR video with missing color tags. It does not force conversion of known other color spaces or HDR input.
 
-## 작업 후 권장: HDR 메타데이터를 명시한 최종 재인코딩
+## Recommended post-processing: final re-encode with explicit HDR metadata
 
-**HDR 업스케일링 작업 후에는 결과를 확인하고, 정확한 `master-display`, `colormatrix`, `colorprim`, `transfer`를 명시하여 최종 재인코딩하는 것을 권장합니다.** 특히 최종 배포 파일은 픽셀의 색 표현과 HDR 메타데이터가 일치하는지 확인하세요.
+**After HDR upscaling, inspect the result and perform a final re-encode with accurate `master-display`, `colormatrix`, `colorprim`, and `transfer` settings.** For a file intended for distribution, check that pixel color representation and HDR metadata agree.
 
-아래 이름은 NVEncC 옵션 기준입니다. 다른 인코더를 사용하면 해당 도구의 동등한 옵션을 지정합니다.
+The option names below follow NVEncC. With another encoder, use the equivalent options.
 
-| 항목 | 이 프로그램의 결과를 후처리할 때 |
+| Option | When post-processing this application's output |
 |---|---|
 | `colormatrix` | `bt2020nc` — BT.2020 non-constant luminance |
-| `colorprim` | `bt2020` — BT.2020 색 원색 |
-| `transfer` | `smpte2084` — PQ 전달 함수 |
-| `master-display` | 실제 HDR 마스터링 조건에 맞는 RGB 원색·백색점 좌표와 최대·최소 휘도 |
+| `colorprim` | `bt2020` — BT.2020 color primaries |
+| `transfer` | `smpte2084` — PQ transfer function |
+| `master-display` | RGB primary and white-point coordinates, plus maximum/minimum luminance, matching the actual HDR mastering conditions |
 
-현재 엔진은 `colormatrix`·`colorprim`·`transfer`에 해당하는 BT.2020/PQ 태그를 이미 기록하고 검사합니다. 다만 **정확한 `master-display` 정보는 자동으로 확정해 기록하지 않습니다.** 마스터링 정보는 SDR 원본이나 파일 확장자만으로 알 수 없으므로, 확인된 조건에 맞춰 지정해야 합니다. 다른 영상의 값이나 임의의 1000nit 예시를 그대로 복사하지 마세요. `colorprim=bt2020`이라고 해서 마스터링 디스플레이의 실제 원색 좌표도 반드시 BT.2020인 것은 아닙니다.
+The engine already writes and checks the BT.2020/PQ tags corresponding to `colormatrix`, `colorprim`, and `transfer`. However, **it does not automatically determine and write accurate `master-display` information.** Mastering information cannot be inferred from the SDR source or file extension alone; specify it from verified conditions. Do not copy values from another video or an arbitrary 1000-nit example. `colorprim=bt2020` does not necessarily mean the mastering display's physical primary coordinates are BT.2020.
 
-재인코딩할 때는 HEVC Main10과 10비트 출력을 유지하고, 이미 HDR인 결과에 SDR→HDR 처리를 다시 적용하지 마세요. 손실 재인코딩은 추가 압축 손실을 만들 수 있으므로 충분한 품질 설정을 사용하고, 완료 후 색 정보와 실제 재생 결과를 다시 확인하세요. 옵션 형식은 [NVEncC의 HDR 메타데이터 문서](https://github.com/rigaya/NVEnc/blob/master/NVEncC_Options.en.md#--master-display-string-or-copy-hevc-av1)를 참고하세요.
+Keep HEVC Main10 and 10-bit output when re-encoding, and do not apply SDR-to-HDR processing again to an already-HDR result. Lossy re-encoding can introduce additional compression loss, so use sufficient quality and check both metadata and playback afterward. See [NVEncC HDR metadata options](https://github.com/rigaya/NVEnc/blob/master/NVEncC_Options.en.md#--master-display-string-or-copy-hevc-av1) for syntax.
 
-## 지원 입력과 현재 범위
+## Supported input and current scope
 
-| 항목 | 지원 범위 |
+| Item | Supported range |
 |---|---|
-| 입력 영상 코덱 | H.264 / HEVC |
-| 입력 색 정보 | SDR BT.709, limited/TV range |
-| 입력 픽셀 형식 | 8/10비트 YUV 4:2:0 |
-| 프레임 구조 | Progressive, 일정한 프레임률, 정사각형 픽셀 |
-| 프레임률 | 1~120fps |
-| 해상도 | 가로·세로 짝수, 최대 8192×8192 — 실제 처리 가능 여부는 GPU에 따름 |
-| 출력 | HEVC Main10 HDR, MKV / MP4 |
+| Input codec | H.264 / HEVC |
+| Input color | SDR BT.709, limited/TV range |
+| Input pixel format | 8/10-bit YUV 4:2:0 |
+| Frame structure | Progressive, constant frame rate, square pixels |
+| Frame rate | 1–120 fps |
+| Resolution | Even width and height, up to 8192×8192; actual support depends on the GPU |
+| Output | HEVC Main10 HDR, MKV / MP4 |
 
-가변 프레임률, 불연속 타임스탬프, 인터레이스, 회전 정보가 있는 입력 등은 현재 버전에서 지원하지 않습니다. 자막·챕터·첨부 파일은 복사하지 않습니다. 한 번에 영상 하나를 처리하며 배치 변환 기능은 없습니다.
+Variable frame rate, discontinuous timestamps, interlaced video, and inputs with rotation metadata are unsupported in the current version. Subtitles, chapters, and attachments are not copied. The application processes one video at a time and has no batch mode.
 
-브라우저 RTX Video HDR과의 외관·수치적 동일성 및 전체 23분 영상의 장시간 완주는 아직 검증하지 않았습니다. HDR ON/OFF 차이 검사는 효과 작동 여부를 확인하기 위한 것으로, 브라우저 결과와의 동일성 검사는 아닙니다.
+Visual/numerical equivalence to browser RTX Video HDR and completion of the entire 23-minute source video have not yet been verified. The HDR ON/OFF check detects whether the effect is working; it does not establish browser equivalence.
 
-## 명령줄 사용법
+## Command-line usage
 
-다음 예시는 실행 파일이 있는 폴더에서 PowerShell로 실행합니다. `input.mp4`를 실제 입력 경로로 바꾸세요.
+Run these examples in PowerShell from the executable folder. Replace `input.mp4` with your actual input path.
 
 ```powershell
-# 사용 가능한 NVIDIA GPU와 번호 확인
+# List available NVIDIA GPUs and indices
 .\RTXVideoHDRConvert.exe --list-gpus
 
-# 기본 품질 CQ 18, MKV 출력
+# Default CQ 18 quality, MKV output
 .\RTXVideoHDRConvert.exe "input.mp4" --output "output.hdr.mkv"
 
-# GPU 1 선택, 평균 40 Mbps, MP4 출력
+# GPU 1, average 40 Mbps, MP4 output
 .\RTXVideoHDRConvert.exe "input.mp4" --adapter 1 --bitrate 40M --output "output.hdr.mp4"
 
-# CQ를 직접 지정하고 첫 432프레임만 시험
+# Explicit CQ, preview only the first 432 frames
 .\RTXVideoHDRConvert.exe "input.mp4" --cq 18 --max-frames 432 --output "preview.hdr.mkv"
 
-# FFmpeg 도구 위치 직접 지정
+# Explicit FFmpeg tool directory
 .\RTXVideoHDRConvert.exe "input.mp4" --ffmpeg-dir "C:\ffmpeg\bin" --output "output.hdr.mkv"
 ```
 
-CLI의 `--bitrate 40M`과 `--bitrate 40000k`는 같은 값입니다. `--bitrate`와 `--cq`는 함께 지정할 수 없습니다.
+`--bitrate 40M` and `--bitrate 40000k` specify the same value. `--bitrate` and `--cq` cannot be used together.
 
-| 진단 옵션 | 용도 |
+| Diagnostic option | Purpose |
 |---|---|
-| `--assume-bt709` | 색 태그가 없는 SDR을 BT.709로 간주 |
-| `--software-decode` | 하드웨어 대신 소프트웨어 디코딩을 명시적으로 선택 |
-| `--cpu-color` | GPU 색 변환 대신 CPU 기준 계산 사용 — 성능 비교용 |
-| `--diagnostics` | HDR 효과 비교와 일부 프레임의 raw 표본 저장 |
-| `--verify-full` | 출력 전체를 다시 디코딩하여 프레임 수 검사 — 시간이 추가로 필요 |
+| `--assume-bt709` | Treat untagged SDR as BT.709 |
+| `--software-decode` | Explicitly select software instead of hardware decoding |
+| `--cpu-color` | Use the CPU reference calculation instead of GPU color conversion for comparison |
+| `--diagnostics` | Save raw HDR effect comparisons and selected raw frame samples |
+| `--verify-full` | Decode the entire output to check frame count; adds processing time |
 
-## 오류가 발생했을 때
+## Troubleshooting
 
-GUI 하단의 로그와 출력 폴더의 **`rtxhdr-run-*`** 디렉터리를 확인하세요.
+Check the GUI log and the **`rtxhdr-run-*`** directory beside the output.
 
-| 파일 | 확인할 내용 |
+| File | Information |
 |---|---|
-| `error.json` | 엔진이 보고한 실패 원인 |
-| `decode.log` | 입력 디코딩과 프레임 시간축 |
-| `encode.log` | NVENC 인코딩 오류 |
-| `mux.log` | 오디오 처리와 파일 구성 오류 |
-| `environment.json` | 선택한 GPU와 HDR 확장 상태 |
-| `result.json` | 성공한 변환의 설정, 프레임 수, 처리 시간 |
+| `error.json` | Failure reported by the engine |
+| `decode.log` | Input decoding and frame timing |
+| `encode.log` | NVENC encoding errors |
+| `mux.log` | Audio processing and container errors |
+| `environment.json` | Selected GPU and HDR extension state |
+| `result.json` | Successful conversion settings, frame count, and processing time |
 
-- **출력 파일이 이미 있음**: 다른 저장 이름을 선택합니다.
-- **HDR 효과가 검출되지 않음**: Windows HDR, NVIDIA RTX Video HDR 설정과 선택한 GPU를 확인합니다.
-- **FFmpeg 도구를 찾지 못함**: 두 실행 파일을 엔진 옆이나 PATH에 준비합니다.
-- **시간축 불연속 오류**: 현재 지원 범위를 벗어난 입력입니다. 오류에 표시된 프레임과 `decode.log`를 확인합니다.
+- **Output already exists**: choose another output filename.
+- **HDR effect not detected**: check Windows HDR, NVIDIA RTX Video HDR settings, and the selected GPU.
+- **FFmpeg tools not found**: place both executables beside the engine or on PATH.
+- **Timestamp discontinuity**: the input is outside the currently supported range. Check the reported frame and `decode.log`.
 
-취소 시에는 프로세스가 즉시 종료되므로 `error.json`이 없을 수 있습니다. 임시 폴더에는 중간 영상이 남아 용량을 사용할 수 있으며, 작업이 종료된 뒤 필요 없는 폴더를 직접 정리할 수 있습니다.
+Cancellation immediately terminates the process, so `error.json` may be absent. Temporary videos can occupy disk space in the job folder. Once a job has stopped, unneeded folders can be removed manually.
 
-## 소스에서 빌드하기
+## Building from source
 
-필요한 개발 도구:
+Required development tools:
 
-- Visual Studio 2022의 C++ 데스크톱 개발 도구 및 Windows SDK
-- CMake 3.24 이상 또는 Visual Studio에 포함된 CMake
+- Visual Studio 2022 C++ desktop development tools and Windows SDK
+- CMake 3.24 or later, or the CMake bundled with Visual Studio
 - PowerShell 7
-- .NET Framework 4.8 환경 — GUI 빌드는 Windows의 C# 컴파일러 사용
+- .NET Framework 4.8; the GUI build uses the Windows C# compiler
 
-프로젝트 루트에서 실행합니다.
+Run from the repository root:
 
 ```powershell
-# GPU 직접 전달 빌드: tools/ffmpeg-native-lock.json의 패키지를 내려받아 압축 해제
+# Direct GPU path: download and extract the package pinned in tools/ffmpeg-native-lock.json
 .\tools\build.ps1 -FFmpegRoot "C:\dev\ffmpeg-shared"
 
-# 공유 라이브러리 없이 기존 파이프 경로만 빌드
+# Build only the earlier pipe path, without shared libraries
 .\tools\build.ps1
 
-# GUI만 다시 빌드
+# Rebuild only the GUI
 .\tools\build-gui.ps1
 
-# 빌드된 GUI 실행
+# Launch the built GUI
 .\build\Release\RTXVideoHDR.exe
 ```
 
-### 코드 구조
+### Code structure
 
-| 경로 | 역할 |
+| Path | Role |
 |---|---|
-| [src/gui.cs](src/gui.cs) | GUI, GPU·품질 설정, 진행 상황, 취소 |
-| [src/convert_main.cpp](src/convert_main.cpp) | 입력 확인부터 인코딩·오디오 처리·완료 검증까지의 변환 흐름 |
-| [src/pipeline.cpp](src/pipeline.cpp) | D3D11 자원, NVIDIA HDR 확장, GPU P010 변환 |
-| [src/frame_timing.h](src/frame_timing.h) | 실제 디코딩 중 프레임 메타데이터와 시간축 검사 |
-| [src/child_process.cpp](src/child_process.cpp) | FFmpeg/ffprobe 실행, 파이프, 자식 프로세스 정리 |
-| [src/color.h](src/color.h) | GPU 색 변환과 비교하는 CPU 기준 계산 |
-| [tests](tests) · [tools](tools) | 빌드, 배포, GUI·색 변환·파일 경로·출력 검증 |
+| [src/gui.cs](src/gui.cs) | GUI, GPU/quality settings, progress, and cancellation |
+| [src/convert_main.cpp](src/convert_main.cpp) | Conversion flow from input checks through encoding, audio processing, and final validation |
+| [src/pipeline.cpp](src/pipeline.cpp) | D3D11 resources, NVIDIA HDR extension, and GPU P010 conversion |
+| [src/frame_timing.h](src/frame_timing.h) | Frame metadata and timestamp validation during actual decoding |
+| [src/child_process.cpp](src/child_process.cpp) | FFmpeg/ffprobe execution, pipes, and child-process cleanup |
+| [src/color.h](src/color.h) | CPU reference calculations for comparison with GPU color conversion |
+| [tests](tests) · [tools](tools) | Build, packaging, and GUI/color/path/output validation |
 
-## 검증 기록과 기술 문서
+## Resuming failed or canceled jobs
 
-GUI의 MKV/VBR 및 MP4/CQ 변환, GPU 선택, 진행 표시와 취소를 시험했습니다. 별도 검증에서는 HDR 태그, 출력 프레임 수·시간축, 색 변환 정확도, MKV 오디오 보존을 확인했습니다.
+The GUI's **Save segments for new conversions (resume support)** option controls checkpoints. It is enabled by default, and `checkpoint=true/false` in `settings.ini` preserves the selection across launches.
 
-v0.2의 4K 432프레임 시험에서 약 36.6~39.2fps를 측정했습니다. 이 수치는 해당 버전과 시험 구간의 결과이며, v0.3 및 모든 입력의 처리 속도를 보장하지 않습니다.
+- **On**: save a resume point roughly every 10 seconds of video, with additional processing overhead.
+- **Off**: prioritize speed without segment saves. The new job cannot resume after failure or cancellation.
 
-- [v0.3 GUI 사용법·검증](docs/gui-v0.3.md)
-- [v0.2 성능 개선·측정과 NVEncC 참고 내용](docs/performance-v0.2.md)
-- [긴 파일 경로 오류 수정](docs/path-fix.md)
-- [구현 계획과 기술 명세](docs/implementation-spec.md)
-- [검증 계획](docs/validation-plan.md)
-- [초기 단계 실험 결과](docs/stage1-results.md)
+This option applies to new jobs. Even with it disabled, **Resume conversion** can reopen an existing checkpoint job, and the most recent checkpoint location is retained.
 
-초기 계획·실험 문서에는 당시의 구현 범위와 향후 계획이 포함됩니다. 현재 사용법과 지원 범위는 이 README 및 v0.3 문서를 기준으로 확인하세요.
+With checkpoints enabled, the default direct GPU path saves an independently playable HEVC segment **roughly every 10 seconds of source video**. `checkpoint.txt` is updated atomically only after encoder finalization, file synchronization, and SHA256 calculation succeed for that segment. An interruption before the first save requires starting over; later interruptions reprocess only the unfinished segment after the last save. The interval refers to **source playback time**, not wall-clock waiting time.
 
-### 인코더 종료 오류 진단 (로컬 보강 빌드)
+1. After failure or cancellation, or after reopening the application, click **Resume conversion**.
+2. Select **checkpoint.txt** in the `rtxhdr-run-*` folder beside the original output location. The most recent job location opens by default.
+3. The source/output paths, GPU, CQ/bitrate, and frame limit are restored and checked before resuming. Other settings currently entered in the GUI are not mixed into the job.
 
-변환이 실패하면 GUI에 표시된 진단 폴더를 확인하세요. `error.json`의 `exit_code`는 변환 프로그램의 종료 코드이며, FFmpeg 자체 종료 코드는 아래 파일에 별도로 기록합니다.
-
-- `encode.log.command.json`: 실행한 FFmpeg 경로와 인자 배열. 다른 자식 프로세스도 각 로그 옆에 같은 형식으로 기록합니다.
-- `encode.log.failure.json`: 오류 동작, Win32 오류, PID, 프로세스 종료 여부, 종료 코드(10진수·16진수), stdin에 전송한 바이트 수. 아직 실행 중이거나 조회하지 못한 종료 코드는 `null`입니다.
-- `encode.log.tail.txt`: 실패 시점의 stderr 끝부분(최대 16 KiB). 로그가 없으면 빈 파일입니다. JSON의 `stderr_tail_hex`에는 같은 내용을 원시 바이트의 16진수로 보존합니다.
-- 인코더 입력 전송 실패 시 `error.json` 메시지에는 완전히 전달한 프레임 수, 실패한 프레임 인덱스(0부터 시작), 처리 경과 시간이 포함됩니다. 전달한 프레임 수는 최종 인코딩 완료 프레임 수를 의미하지 않습니다.
-
-파이프 쓰기 실패 시 자식 프로세스 종료를 최대 2초 기다린 뒤, 정리 과정에서 프로세스를 종료하기 전에 상태를 수집합니다. 진단 저장 자체가 실패해도 원래 오류를 유지합니다. 이 자식 프로세스 진단 자체는 자동 재시작을 하지 않습니다. 현재 기본 GPU 경로의 수동 재개 방법은 아래를 참고하세요. 실행 인자에는 로컬 영상 경로가 포함되므로 로그를 공유할 때 참고하세요.
-
-### GPU 직접 전달과 처리 겹치기
-
-기본 경로는 GPU 텍스처를 직접 전달합니다. `--pipe-video` 경로에서도 입력 읽기·GPU HDR 처리·인코더 전송을 겹쳐 수행합니다. 화질 설정은 유지합니다. CLI의 `--serial-pipeline`으로 기존 순차 방식과 비교할 수 있습니다. `--diagnostics`와 `--cpu-color`는 순차 경로를 사용합니다. 측정 조건과 제한은 [로컬 성능 검증](docs/performance-overlap.md)을 참고하세요.
-
-
-### v0.4.0 성능과 진단
-
-4K 432프레임·RTX 4060·CQ 18 시험에서 GPU 직접 전달은 약 96.7fps, 이전 순차 경로는 약 22.9fps였습니다. 짧은 구간과 당시 부하에서의 측정이며 다른 영상·GPU의 속도를 보장하지 않습니다. 기존 결과와 전체 프레임 픽셀·타임스탬프·HDR 태그·오디오 일치를 검증했습니다. 인코딩 프리셋, CQ와 HDR 수식은 유지합니다.
-
-직접 경로에서는 `native_gpu_pipeline: true`가 `result.json`에 기록됩니다. `native.log`에는 FFmpeg API 메시지와 주기적인 전달 프레임 수, `native-config.json`에는 라이브러리 버전·입력·인코딩 설정이 남습니다. 파이프 경로의 `encode.log`와 프로세스 종료 진단도 유지합니다. `--serial-pipeline`, `--software-decode`, `--cpu-color`, `--diagnostics`는 비교용 파이프 경로를 사용합니다.
-
-FFmpeg 공유 라이브러리는 LGPL에 따라 사용하며 원래 이름의 DLL을 교체할 수 있습니다. 설치되는 패키지의 라이선스는 `FFmpeg-LICENSE.txt`, 출처·버전·검증 해시는 `runtime-version.json`에서 확인할 수 있습니다. [FFmpeg 소스](https://ffmpeg.org/download.html#get-sources), [BtbN 빌드 스크립트와 배포](https://github.com/BtbN/FFmpeg-Builds)를 참고하세요.
-
-
-## 실패하거나 취소한 작업 이어서 변환하기
-
-GUI의 **새 변환에서 구간 저장 (재개 지원)** 옵션으로 구간 저장을 선택할 수 있습니다. 기본값은 켜짐이며 선택은 `settings.ini`의 `checkpoint=true/false`에 저장되어 재실행 후에도 유지됩니다.
-
-- **켜짐**: 영상 약 10초마다 재개 지점을 저장합니다. 추가 처리 비용이 발생합니다.
-- **꺼짐**: 구간 저장 없이 속도를 우선합니다. 이 작업은 실패·취소 후 재개할 수 없습니다.
-
-이 옵션은 새로 시작하는 작업에 적용됩니다. 옵션을 꺼도 **이어서 변환** 버튼으로 기존 체크포인트 작업을 재개할 수 있으며, 최근 재개 작업 위치도 유지됩니다.
-
-구간 저장을 켠 기본 GPU 직접 전달 경로는 **영상 약 10초 분량마다** 독립적으로 재생 가능한 HEVC 구간을 저장합니다. 저장 중인 구간의 인코딩 마무리·파일 동기화·SHA256 계산이 모두 성공하면 `checkpoint.txt`를 원자적으로 갱신합니다. 첫 구간이 저장되기 전 중단되면 처음부터 시작하고, 이후에는 마지막 저장 지점 뒤의 미완료 구간만 다시 처리합니다. 간격은 실제 대기 시간이 아니라 **원본 영상의 재생 시간**입니다.
-
-1. 실패·취소 후, 또는 프로그램을 다시 실행한 뒤 **이어서 변환**을 누릅니다.
-2. 원본 출력 위치 옆 `rtxhdr-run-*` 폴더의 **checkpoint.txt**를 선택합니다. 마지막 작업 위치가 기본으로 열립니다.
-3. 저장된 원본·출력 위치·GPU·CQ/비트레이트·프레임 제한을 복원하고 검사한 뒤 이어갑니다. 현재 GUI에 입력된 다른 설정을 섞지 않습니다.
-
-| 중단 시점 | 재개 동작 |
+| Interruption point | Resume behavior |
 |---|---|
-| 영상 처리 중 | 저장된 구간 다음 지점의 앞쪽 키프레임으로 이동하고 필요한 앞부분만 하드웨어 디코딩한 뒤 이어서 변환 |
-| 모든 영상 구간 저장 후 오디오 결합 중 | 영상 변환 생략. 오디오 결합을 다시 실행 |
-| 오디오 결합 결과 저장 후 검사·최종 저장 중 | 저장된 결합 파일 재사용. 검사와 최종 저장 재시도 |
-| 최종 파일 이동 직후 종료 | 기록된 SHA256과 최종 결과가 같으면 완료로 인정 |
+| During video processing | Seek to a keyframe before the next unsaved position, hardware-decode only the required preroll, then continue conversion |
+| During audio muxing after all video segments were saved | Skip video conversion and rerun audio muxing |
+| During validation/final saving after muxed output was saved | Reuse the muxed file and retry validation and publication |
+| Immediately after moving the final file | Recognize completion if the final output matches the recorded SHA256 |
 
-재개 시 저장 구간의 해시를 읽어서 확인하지만 **원본 전체를 처음부터 디코딩하지 않습니다.** 원본은 경로·크기·수정 시각·앞/중간/뒤 표본 해시로 확인합니다. 이는 원본 전체 바이트 해시 검증은 아닙니다. 저장 구간이 없거나 손상된 경우, 원본이 변경된 경우에는 안전하게 재개를 거부합니다. 변환 엔진과 FFmpeg 공유 라이브러리의 해시도 확인하므로 **작업 완료 전에는 사용하던 빌드/DLL을 교체하지 마세요.** 영상이 남은 작업에서는 GPU와 드라이버도 확인합니다.
+Resume reads saved segments to verify their hashes, but **does not decode the entire source from the beginning**. The source is checked by path, size, modification time, and sample hashes from its beginning, middle, and end. This is not a full byte hash of the source. Missing/corrupt segments or a changed source cause resume to be refused. The converter and FFmpeg shared libraries are also hash-checked, so **do not replace the build or DLLs until the job is complete**. GPU and driver identity are checked when video processing remains.
 
-**NVIDIA App의 HDR 효과 설정은 작업 도중과 재개 사이에 동일하게 유지하세요.** 모든 외부 효과 설정을 읽거나 자동 복원하는 기능은 없습니다. 프로세스 재시작 후 HDR 처리를 새로 초기화하며, 모든 콘텐츠에서 경계의 시각적 동일성까지 보장하지는 않습니다.
+**Keep NVIDIA App HDR effect settings unchanged during a job and between resume attempts.** The application cannot read or restore every external effect setting. HDR processing is initialized again after a process restart; visual identity at restart boundaries is not guaranteed for all content.
 
-최종 영상은 저장 구간을 재인코딩 없이 연결하고, 원본 오디오는 마지막에 한 번만 복사하거나 AAC로 변환합니다. 따라서 MP4 오디오를 구간마다 재인코딩해서 생길 수 있는 누적 지연을 피합니다. 최근/평균 FPS는 이번 실행에서 새로 처리한 프레임으로 계산하고 전체 진행 프레임 수에는 복원한 구간을 포함합니다.
+Saved segments are concatenated without re-encoding. Original audio is copied or converted to AAC only once at the end, avoiding cumulative delays that could result from re-encoding MP4 audio per segment. Recent/average FPS count frames newly processed in this attempt; overall progress also includes restored segments.
 
-- 체크포인트와 구간 파일은 **rtxhdr-run 폴더 전체를 함께 보관**해야 합니다. `checkpoint.txt`만 옮기면 재개할 수 없습니다.
-- 완료 후에도 구간을 자동 삭제하지 않습니다. 최종 결과를 확인한 뒤 해당 작업 폴더를 지워 공간을 정리할 수 있습니다. 처리 중에는 구간 합계와 최종 파일에 해당하는 추가 디스크 공간이 필요합니다.
-- 과거 버전에서 만든 임시 파일은 체크포인트가 없어 이 방식으로 재개할 수 없습니다.
-- `--pipe-video`, `--serial-pipeline`, `--software-decode`, `--cpu-color`, `--diagnostics` 비교 경로에는 구간 재개를 적용하지 않습니다.
+- **Keep the entire rtxhdr-run folder together**, including the checkpoint and segments. Moving only `checkpoint.txt` is insufficient for resume.
+- In the current development build, successful audio muxing, output validation, and final saving trigger automatic removal of intermediate videos and large raw frame files. Logs and small job metadata remain. During processing, extra disk space is needed for the segment total and final output.
+- Temporary files from older versions without checkpoints cannot resume through this mechanism.
+- Segment resume is unavailable on the `--pipe-video`, `--serial-pipeline`, `--software-decode`, `--cpu-color`, and `--diagnostics` comparison paths.
 
 ```powershell
-# 수동 재개: 원래 설정을 체크포인트에서 복원
+# Manual resume: restore original settings from the checkpoint
 .\RTXVideoHDRConvert.exe --resume "D:\Video\rtxhdr-run-123-456\checkpoint.txt"
 
-# CLI에서 저장 간격 변경: 원본 영상 시간 기준 1~600초, 기본 10초
+# Change the interval: 1–600 seconds of source video, default 10
 .\RTXVideoHDRConvert.exe "input.mp4" --checkpoint-seconds 30
 
-# GUI에서 구간 저장을 끈 것과 동일한 속도 우선 실행 (재개 불가)
+# Prioritize speed, as with checkpoints disabled in the GUI (cannot resume)
 .\RTXVideoHDRConvert.exe "input.mp4" --no-checkpoint
 ```
 
-### 보강된 오류 기록
+### Improved error records
 
-작업 폴더 내부에 재시도별 진단 폴더가 생기며 기존 기록은 유지됩니다. 엔진의 `error.json`에는 빌드 버전, 처리 경로, 실패 단계, 마지막 전달 프레임 수, 저장된 프레임 수, 경과 시간, 남은 디스크 공간, GPU/드라이버 식별 정보와 D3D 장치 제거 HRESULT를 기록합니다. 조회 가능한 경우 GPU 메모리 사용량/예산도 기록합니다. 구간의 FFmpeg API 로그는 각 구간 폴더의 `native.log`에 남습니다.
+Each retry creates a diagnostic subfolder inside the job folder and preserves previous records. The engine's `error.json` records the build version, backend, failure stage, last submitted frame count, saved frame count, elapsed time, free disk space, GPU/driver identity, and D3D device-removal HRESULT. GPU memory usage and budget are included when available. Each segment's FFmpeg API log is saved as `native.log` in its segment folder.
 
-GUI에서 취소하거나 엔진이 비정상 종료되면 별도의 `gui-exit-*.json`에 종료 코드·취소 여부·단계·마지막 진행 표시·실행 인자·GUI 로그를 저장합니다. 엔진이 `error.json`을 작성하기 전에 죽어도 GUI 기록이 남습니다. GUI까지 강제 종료되거나 저장 공간/권한이 없으면 종료 기록이 남지 않을 수 있지만, 이미 저장된 체크포인트를 선택해 재개할 수 있습니다. 진단 파일에는 로컬 경로가 포함됩니다.
+If the GUI cancels a job or the engine exits abnormally, a separate `gui-exit-*.json` records the exit code, cancellation state, stage, last progress display, arguments, and GUI log. This can survive an engine failure before `error.json` is written. If the GUI is also forcibly terminated, or storage/permissions prevent writing, the exit record may be absent; an already saved checkpoint can still be selected for resume. Diagnostic files contain local paths.
 
-재개/실패 주입 검증과 구간 저장의 처리 비용은 [검증 기록](docs/checkpoint-validation.md)을 참고하세요. 구간 저장 때문에 추가 인코더 초기화와 디스크 쓰기가 발생하며 속도는 낮아질 수 있습니다.
+See the [validation record](docs/checkpoint-validation.md) for resume/failure-injection tests and checkpoint overhead. Segment saves require extra encoder initialization and disk writes and can reduce speed.
+
+### Automatic intermediate cleanup after success (v0.4.2-dev)
+
+After conversion, the GUI enters **Output saved · Cleaning intermediate files**. Resume files are not deleted before final publication or after failure/cancellation. Successful cleanup also applies to the single-encoder and pipe paths with checkpoints disabled.
+
+- Removed: application-generated `video.mkv`, `completed.mkv/mp4`, segment videos, same-named intermediate videos from failed earlier attempts within this job, `guard-on/off.rgb10a2`, and `frame-N.rgb10a2/p010`.
+- Preserved: final output, source, `*.log`, diagnostic/command/performance JSON, `checkpoint.txt`, frame timing, concat lists, and other small metadata. Unknown filenames and other job folders are untouched.
+- `cleanup.json` records removed file/byte counts and removal failures. Files in use or lacking delete permission remain, while the conversion itself is still reported as successful.
+- Reopening a completed checkpoint job verifies the final file hash and retries only leftover intermediate cleanup. Completion is recognized even when segments have already been deleted. A deleted or modified final file is not accepted as completed.
+- Linked folders/files are not followed for deletion. Hard links referring to the source or final output are also protected.
+
+For CLI experiments that need intermediate data, specify `--keep-intermediates`. In particular, combine it with `--diagnostics` when external tools need the raw RGB/P010 samples. The option applies only to that invocation.
+
+```powershell
+.\RTXVideoHDRConvert.exe "input.mp4" --diagnostics --keep-intermediates
+.\RTXVideoHDRConvert.exe --resume "D:\Video\rtxhdr-run-123-456\checkpoint.txt" --keep-intermediates
+```
+
+The application does not scan already-completed folders from older releases or other running jobs. Cleanup applies to jobs that finish successfully using the new build.

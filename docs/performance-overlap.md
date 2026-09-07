@@ -1,37 +1,39 @@
-# 프레임 처리 겹치기: 로컬 성능 검증
+# Overlapping frame processing: local performance validation
 
-2026-09-06. 새 GitHub 릴리즈 없이 로컬 테스트 빌드에 적용.
+[English README](../README.md) | [한국어](ko/performance-overlap.md)
 
-## 변경
+2026-09-06. Applied to a local test build without creating a new GitHub release at that time.
 
-기존에는 입력 읽기 → HDR/P010 GPU 처리 완료 대기 → 인코더 파이프 쓰기를 순서대로 수행했다. 이제 GPU 작업 제출과 결과 수집을 분리한다. GPU가 현재 프레임을 처리하는 동안 다음 입력을 읽고, 다음 GPU 작업을 제출한 뒤 이전 결과를 인코더에 보낸다. GPU 작업은 한 프레임만 대기 상태로 유지하며 기존 버퍼를 재사용한다. D3D11 컨텍스트는 기존처럼 한 스레드에서만 사용한다.
+## Changes
 
-EOF에서도 마지막 대기 프레임을 수집·전송한다. 진행 프레임 수는 인코더 파이프에 완전히 전송한 프레임을 기준으로 한다. 입력 검사는 원래 순서를 유지한다. GPU 대기 시간 제한과 인코더 실패 진단도 유지한다.
+Previously, input reading → waiting for HDR/P010 GPU processing → writing to the encoder pipe happened sequentially. GPU submission and collection are now separate. While the GPU processes the current frame, the next input is read; after submitting the next GPU operation, the previous output is sent to the encoder. Only one GPU frame remains pending, existing buffers are reused, and the D3D11 context stays on a single thread.
 
-GUI에서는 기본 적용된다. CLI의 `--serial-pipeline`으로 기존 순차 처리와 비교할 수 있다. `--cpu-color`와 raw 표본 저장용 `--diagnostics`는 순차 경로를 사용한다. `result.json`의 `overlapped_pipeline`으로 실제 적용 여부를 확인한다. 처리 시간 항목은 호출 스레드가 소비한 시간이며 순수 GPU 연산 시간으로 해석하면 안 된다.
+At EOF, the last pending frame is collected and delivered. Progress counts frames fully written to the encoder pipe. Input validation stays in its original order. GPU wait timeouts and encoder failure diagnostics are preserved.
 
-## 같은 구간 반복 비교
+The GUI enables this by default in this build. Use `--serial-pipeline` to compare with the original sequential path. `--cpu-color` and `--diagnostics` for raw samples use the sequential path. Check `overlapped_pipeline` in `result.json` to see which mode ran. Timing fields measure time spent by the calling thread, not pure GPU execution time.
 
-RTX 4060 (adapter 1), 3840×2160, 10비트 SDR, 71.928fps 입력의 첫 432프레임. CQ 18, HEVC Main10, p5/hq, MKV. 각 회차에서 겹치기/순차 모드를 번갈아 실행했다. 다른 사용자 작업은 중단하지 않았으므로 완전히 격리된 벤치마크는 아니다.
+## Repeated comparison on the same segment
 
-| 회차 | 순차 처리 | 겹쳐 처리 |
+RTX 4060 (adapter 1), first 432 frames of 3840×2160, 10-bit SDR, 71.928 fps input. CQ 18, HEVC Main10, p5/hq, MKV. Overlapped and sequential runs alternated each round. Other user jobs were left running, so this was not a fully isolated benchmark.
+
+| Round | Sequential | Overlapped |
 |---|---:|---:|
 | 1 | 22.98 fps | 35.09 fps |
 | 2 | 22.88 fps | 35.68 fps |
 | 3 | 20.94 fps | 35.47 fps |
-| 중앙값 | 22.88 fps | 35.47 fps |
+| Median | 22.88 fps | 35.47 fps |
 
-중앙값 기준 처리량 약 55% 증가, 같은 프레임 수의 처리 시간 약 35% 감소. 짧은 구간 결과이며 긴 영상 전체 또는 다른 GPU의 속도를 보장하지 않는다. 인코딩 품질 설정과 HDR/색 변환 수식은 변경하지 않았다. CPU↔GPU 복사는 아직 남아 있으며 GPU 텍스처 직접 디코딩/NVENC 연결은 이번 변경에 포함되지 않는다.
+Median throughput increased by about 55%, reducing processing time for the same frame count by about 35%. These short-segment results do not guarantee full-length or other-GPU performance. Encoding quality settings and HDR/color formulas were unchanged. CPU↔GPU copies remained; direct GPU-texture decoding/NVENC integration was outside this change.
 
-측정 로그는 로컬 `artifacts/overlap-enabled-{1,2,3}.txt`, `artifacts/overlap-serial-{1,2,3}.txt`에 있다. 원본 구현 백업으로 먼저 측정한 `overlap-baseline-*`는 측정 시점/부하가 달라 위 표에 합치지 않았다.
+Local measurement logs are `artifacts/overlap-enabled-{1,2,3}.txt` and `artifacts/overlap-serial-{1,2,3}.txt`. Earlier `overlap-baseline-*` measurements from a backup of the original implementation were excluded because timing and load conditions differed.
 
-## 검증 완료
+## Completed validation
 
-- `tools/verify-overlap.py`: 순차/겹치기 결과의 4K 432프레임 전체 디코딩 후 framemd5와 타임스탬프 동일. Main10/BT.2020/PQ/limited/center 태그 및 오디오 패킷 해시·시간 동일.
-- `GpuColorTests`: 1918/1920×1080, 8/10비트, 회색 램프/컬러 바 8조합에서 CPU 대비 최대 오차 0. submit/collect 분리 전후 P010 바이트 동일. 대기 중 입력 재사용 및 중복 수집 거부.
-- 1프레임/2프레임 변환에 `--verify-full` 적용: 마지막 프레임 배출과 프레임 수 검증 통과.
-- 실제 GUI MKV/MP4 240프레임 정상 EOF 변환, 단계 표시 및 취소 테스트 통과.
-- 타임스탬프 불연속 fixture는 기존과 동일하게 575번 프레임에서 거부, 최종 파일 미생성.
-- CTest 3개(경로, FPS, 자식 프로세스 오류 진단) 통과.
+- `tools/verify-overlap.py`: full decoding of both 4K 432-frame outputs produced identical framemd5 and timestamps. Main10/BT.2020/PQ/limited/center tags, audio packet hashes, and audio timing matched.
+- `GpuColorTests`: eight combinations of 1918/1920×1080, 8/10-bit, and gray ramp/color bars had maximum CPU-reference error 0. P010 bytes matched before and after separating submit/collect. Reusing a pending input and duplicate collection were refused.
+- One- and two-frame conversions with `--verify-full` passed final-frame draining and frame-count checks.
+- Actual GUI MKV/MP4 conversion to normal EOF at 240 frames, stage display, and cancellation passed.
+- The discontinuous-timestamp fixture was rejected at frame 575 as before, without creating a final file.
+- Three CTest cases passed: paths, FPS, and child-process failure diagnostics.
 
-실행 중인 기존 빌드를 덮어쓰지 않기 위해 로컬 실행 파일은 `build-overlap/Release/RTXVideoHDR.exe`에 생성했다. GitHub 업로드와 새 릴리즈 생성은 하지 않았다.
+The local executable was built at `build-overlap/Release/RTXVideoHDR.exe` to avoid overwriting an existing running build. No GitHub upload or new release was made for this change at that time.

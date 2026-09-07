@@ -7,6 +7,7 @@
 #include "frame_timing.h"
 #include "progress_rate.h"
 #include "checkpoint.h"
+#include "intermediate_cleanup.h"
 #include <commdlg.h>
 #include <chrono>
 #include <fstream>
@@ -36,6 +37,20 @@ static void ReportStage(const char* stage) {
     currentStage=stage;
     // stdout is a pipe in the GUI. Newlines alone do not flush a redirected stream.
     std::cout << "\nRTXHDR_STAGE " << stage << '\n' << std::flush;
+}
+static void CleanupCompleted(const std::filesystem::path& root,const std::filesystem::path& input,
+                             const std::filesystem::path& output,const std::filesystem::path& logs,bool keep) {
+    if(keep) {std::cout<<"Intermediate retention requested.\n"<<std::flush;return;}
+    ReportStage("cleanup");
+    auto report=intermediate_cleanup::Clean(root,input,output);
+    try {checkpoint::Atomic(logs/L"cleanup.json",report.Json());}
+    catch(const std::exception& e) {report.warnings.push_back(e.what());}
+    std::cout<<"Removed "<<report.removedFiles<<" intermediate files ("<<report.removedBytes<<" bytes).\n";
+    if(!report.warnings.empty()) {
+        std::cout<<"RTXHDR_CLEANUP_WARNING Final output is complete; some intermediates or cleanup logs could not be cleaned/saved.\n";
+        for(auto& warning:report.warnings)std::cerr<<warning<<'\n';
+    }
+    std::cout<<std::flush;
 }
 static std::wstring ParseBitrate(const std::wstring& value) {
     if(value.empty() || value.front()<L'0' || value.front()>L'9') throw Failure(2,"Invalid bitrate");
@@ -135,7 +150,7 @@ int wmain(int argc,wchar_t** argv) {
     bool interactive=argc==1 || (argc==2 && std::wstring(argv[1]).rfind(L"--",0)!=0);
     try {
         std::filesystem::path input,output,toolDirectory;
-        bool noCheckpoint=false;unsigned chunkSeconds=10;
+        bool keepIntermediates=false,noCheckpoint=false;unsigned chunkSeconds=10;
         bool assume=false,softwareDecode=false,cpuColor=false,fullVerify=false,diagnostics=false,serialPipeline=false,pipeVideo=false;
         unsigned adapterIndex=0,maxFrames=0;
         std::wstring bitrate; unsigned cq=18; bool cqSet=false;
@@ -148,18 +163,19 @@ int wmain(int argc,wchar_t** argv) {
             if(!GetOpenFileNameW(&dialog)) return 2;
             input=path;
         }
-        if(argc==3 && std::wstring(argv[1])==L"--resume") {
-            job.Load(argv[2]);resuming=true;input=job.input;output=job.output;adapterIndex=job.adapter;maxFrames=job.maximum;
+        if((argc==3 || (argc==4 && std::wstring(argv[3])==L"--keep-intermediates")) && std::wstring(argv[1])==L"--resume") {
+            job.Load(argv[2]);resuming=true;keepIntermediates=argc==4;input=job.input;output=job.output;adapterIndex=job.adapter;maxFrames=job.maximum;
             cq=job.cq;bitrate=Wide(job.bitrate);assume=job.assume;chunkSeconds=job.chunkSeconds;fullVerify=job.fullVerify;toolDirectory=job.toolDirectory;
         }
         for(int i=resuming?argc:1;i<argc;++i) {
             std::wstring arg=argv[i];
             if(arg==L"--help") {
-                std::cout << "RTX Video HDR Convert v0.4.1\nRTXVideoHDRConvert input.mp4 [--output output.hdr.mkv] [--adapter 0]\n"
+                std::cout << "RTX Video HDR Convert v0.4.2-dev\nRTXVideoHDRConvert input.mp4 [--output output.hdr.mkv] [--adapter 0]\n"
                     "  [--ffmpeg-dir DIRECTORY] [--assume-bt709] [--max-frames N] [--bitrate 40M | --cq 18]\n"
                     "  [--software-decode] [--cpu-color] [--verify-full] [--diagnostics] [--serial-pipeline] [--pipe-video]\n"
                     "Resume: RTXVideoHDRConvert --resume PATH/checkpoint.txt\n"
                     "  [--checkpoint-seconds 10] [--no-checkpoint] (native GPU path only)\n"
+                    "  [--keep-intermediates] Keep temporary video/raw diagnostics after successful output.\n"
                     "Double-click to choose a file, or drop one file onto this executable.\n"
                     "Test version: progressive 8/10-bit BT.709 limited H.264/HEVC, constant frame rate.\n"
                     "Requires working NVIDIA RTX Video HDR and ffmpeg/ffprobe. Resolution is preserved. Output .mkv (audio copy) or .mp4 (AAC 320k).\n";
@@ -172,6 +188,7 @@ int wmain(int argc,wchar_t** argv) {
             else if(arg==L"--serial-pipeline") serialPipeline=true;
             else if(arg==L"--pipe-video") pipeVideo=true;
             else if(arg==L"--no-checkpoint") noCheckpoint=true;
+            else if(arg==L"--keep-intermediates") keepIntermediates=true;
             else if(arg==L"--checkpoint-seconds") {if(++i>=argc)throw Failure(2,"Missing checkpoint interval");size_t end=0;chunkSeconds=std::stoul(argv[i],&end);if(end!=std::wstring(argv[i]).size()||chunkSeconds<1||chunkSeconds>600)throw Failure(2,"Checkpoint interval must be 1..600 seconds");}
             else if(arg==L"--bitrate" || arg==L"--cq") {
                 if(++i>=argc) throw Failure(2,"Missing rate control value");
@@ -244,17 +261,21 @@ int wmain(int argc,wchar_t** argv) {
                 auto module=GetModuleHandleW(name);wchar_t dll[32768]{};
                 if(module&&GetModuleFileNameW(module,dll,32768))engineHash+=":"+checkpoint::Hash(dll);
             }
-            if(resuming) {if(job.engine!=engineHash)throw Failure(2,"Converter build changed; resume with the original build");std::cout<<"Checking saved segment integrity (no video decoding)...\n"<<std::flush;job.Validate();
+            if(resuming) {if(job.engine!=engineHash)throw Failure(2,"Converter build changed; resume with the original build");
                 if(std::filesystem::exists(FileSystemPath(output))) {
-                    if(job.muxHash.empty()||checkpoint::Hash(output)!=job.muxHash)throw Failure(2,"Output already exists and does not match this job");
-                    ReportStage("finalize");std::cout<<"Done: "<<Utf8(output.c_str())<<'\n';return 0;
+                    if(!job.videoDone||job.muxHash.empty()||checkpoint::Hash(output)!=job.muxHash)throw Failure(2,"Output already exists and does not match this job");
+                    ReportStage("finalize");
+                    WriteText(run/L"result.json","{\"status\":\"completed\",\"recovered_published_output\":true,\"frames\":"+std::to_string(job.Count())+",\"output\":"+JsonString(Utf8(output.c_str()))+"}\n");
+                    CleanupCompleted(job.directory,input,output,run,keepIntermediates);
+                    std::cout<<"Done: "<<Utf8(output.c_str())<<'\n';return 0;
                 }
+                std::cout<<"Checking saved segment integrity (no video decoding)...\n"<<std::flush;job.Validate();
             }
             else {job.Identify();job.engine=engineHash;job.Save();}
         } else {run=CreateRunDirectory(output);std::cout<<"Logs: "<<Utf8(run.c_str())<<'\n'<<std::flush;}
 
         auto ffmpeg=FindTool(L"ffmpeg.exe",toolDirectory),ffprobe=FindTool(L"ffprobe.exe",toolDirectory);
-        std::cout << "RTX Video HDR Convert v0.4.1\nInput: " << Utf8(input.c_str()) << '\n';
+        std::cout << "RTX Video HDR Convert v0.4.2-dev\nInput: " << Utf8(input.c_str()) << '\n';
         currentStage="input_probe";
         auto v=Probe(ffprobe,input,run,assume,maxFrames);
         currentStage="hdr_prepare";
@@ -480,7 +501,7 @@ int wmain(int argc,wchar_t** argv) {
         if(!MoveFileExW(FileSystemPath(completed).c_str(),FileSystemPath(output).c_str(),MOVEFILE_WRITE_THROUGH))
             throw Failure(6,FileError("Cannot finalize output",output,GetLastError()));
         std::ostringstream report;
-        report << "{\"status\":\"completed\",\"test_version\":\"0.4.1\",\"frames\":" << count
+        report << "{\"status\":\"completed\",\"test_version\":\"0.4.2-dev\",\"frames\":" << count
             << ",\"hdr_effect_mae\":" << (resumable&&restoredFrames==count?"null":std::to_string(effect)) << ",\"input\":" << JsonString(Utf8(input.c_str()))
             << ",\"output\":" << JsonString(Utf8(output.c_str()))
             << ",\"width\":" << v.width << ",\"height\":" << v.height
@@ -508,6 +529,7 @@ int wmain(int argc,wchar_t** argv) {
             << ",\"read_seconds\":" << readSeconds << ",\"process_seconds\":" << processSeconds
             << ",\"write_seconds\":" << writeSeconds << "}\n";
         WriteText(run/L"result.json",reportText+performance.str());
+        CleanupCompleted(resumable?job.directory:run,input,output,run,keepIntermediates);
         std::cout << "Processing average: " << (conversionSeconds>0?(count-restoredFrames)/conversionSeconds:0) << " fps; first frame: " << firstFrameSeconds << "s\n";
         std::cout << "Done: " << Utf8(output.c_str()) << "\nLogs: " << Utf8((resumable?job.directory:run).c_str()) << '\n';
         if(interactive) {std::cout << "Press Enter to close.\n";std::cin.get();}
@@ -520,7 +542,7 @@ int wmain(int argc,wchar_t** argv) {
             try {
                 ULARGE_INTEGER free{};GetDiskFreeSpaceExW(FileSystemPath(run).c_str(),&free,nullptr,nullptr);
                 const auto elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-attemptStart).count();
-                std::ostringstream error;error<<"{\"version\":\"0.4.1\",\"backend\":"<<JsonString(backend)<<",\"stage\":"<<JsonString(currentStage)
+                std::ostringstream error;error<<"{\"version\":\"0.4.2-dev\",\"backend\":"<<JsonString(backend)<<",\"stage\":"<<JsonString(currentStage)
                     <<",\"last_submitted_frame_count\":"<<lastFrame<<",\"saved_frame_count\":"<<savedFrames<<",\"elapsed_seconds\":"<<elapsed
                     <<",\"available_disk_bytes\":"<<free.QuadPart<<",\"gpu\":"<<gpuState<<",\"device_removed_hresult\":";
                 if(diagnosticDevice)error<<diagnosticDevice->GetDeviceRemovedReason();else error<<"null";

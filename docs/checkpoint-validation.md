@@ -1,43 +1,45 @@
-﻿# 구간 재개·오류 진단 검증 (v0.4.1)
+# Checkpoint resume and diagnostics validation (v0.4.1)
 
-2026-09-06, Windows, NVIDIA RTX 4060에서 검증했습니다. GUI MKV/VBR 시험은 RTX 5080도 사용했습니다. 아래 시험 결과와 구간 저장 선택 기능을 v0.4.1 배포에 포함합니다.
+[English README](../README.md) | [한국어](ko/checkpoint-validation.md)
 
-## 확인한 동작
+Tested on 2026-09-06 on Windows with an NVIDIA RTX 4060. The GUI MKV/VBR test also used an RTX 5080. These results and the checkpoint toggle are included in v0.4.1.
 
-| 시험 | 결과 |
+## Verified behavior
+
+| Test | Result |
 |---|---|
-| 1080p 240프레임, 4K 71.928fps 432프레임 구간 변환 | 성공 |
-| 체크포인트 저장 뒤 프로세스 강제 종료 → 수동 재개 | 성공, 저장 구간 파일 해시 유지 |
-| 중단 없는 구간 변환과 재개 결과 비교 | 디코딩한 프레임 바이트·타임스탬프·HDR 태그·오디오 패킷 일치 |
-| 영상 완료 후 MP4 오디오 결합 도중 강제 종료 | 재개 성공, 영상 재처리 없음 |
-| 최종 경로에 다른 파일을 만들어 저장 실패 유도 | 다른 파일 보존, 충돌 해결 후 결합 결과 재사용 |
-| 최종 파일 저장이 이미 끝난 작업 재개 | 기록된 해시를 확인하고 완료로 인정 |
-| 저장 구간 변조 / 체크포인트 본문 변조 | 재개 거부 |
-| 원본 복사본의 수정 시각 변경 | 재개 거부, 실제 원본은 변경하지 않음 |
-| 다른 핸들이 작업 잠금을 보유 | 중복 실행 거부 |
-| 체크포인트 교체를 막아 저장 실패 유도 | 마지막 전달 프레임과 실제 저장 완료 프레임을 구분하여 기록. 잠금 해제 후 재개 성공 |
-| GUI 취소 → 창 닫기 → 새 창에서 재개 | 300초/9000프레임 시험 영상 완료, 원본·출력 설정 복원, gui-exit JSON 생성 |
-| GUI MKV/VBR, MP4/CQ, 취소, 후처리 단계 표시 | 성공 |
-| GUI 구간 저장 끄기 → 변환 / 취소 | 단일 인코더 옵션 전달, 재개 불가 안내, 최근 체크포인트 위치 보존 |
-| 구간 저장 선택 변경 → GUI 재실행 | 선택 유지, 잘못된 설정값은 기본 켜짐으로 복구 |
-| 새 작업의 구간 저장을 끈 상태에서 기존 작업 재개 | 9000프레임 변환 완료, 새 작업용 꺼짐 선택 유지 |
-| 비교용 파이프 경로 30프레임 | 성공 |
-| 기존 CTest: 경로, FPS, 자식 프로세스 | 3/3 통과 |
+| Segmented conversion: 1080p, 240 frames; 4K, 71.928 fps, 432 frames | Passed |
+| Force termination after a checkpoint → manual resume | Passed; saved segment hashes were preserved |
+| Compare uninterrupted segmented conversion with resumed output | Decoded frame bytes, timestamps, HDR tags, and audio packets matched |
+| Force termination during MP4 audio muxing after video completion | Resumed successfully without reprocessing video |
+| Create another file at the final path to force publication failure | Existing file preserved; muxed output reused after resolving the conflict |
+| Resume a job whose final file was already saved | Recorded hash checked and completion recognized |
+| Modify a saved segment / checkpoint body | Resume refused |
+| Change modification time on a copy of the source | Resume refused; actual source left unchanged |
+| Hold the job lock with another handle | Duplicate execution refused |
+| Block checkpoint replacement to force a save failure | Last submitted and actually saved frame counts recorded separately; resume succeeded after unlocking |
+| GUI cancel → close → resume in a new window | Completed a 300-second/9000-frame test video; source/output settings restored; gui-exit JSON created |
+| GUI MKV/VBR, MP4/CQ, cancellation, and post-processing stage display | Passed |
+| Disable GUI checkpoints → convert / cancel | Single-encoder option passed; no-resume notice shown; latest checkpoint location preserved |
+| Change checkpoint preference → restart GUI | Selection retained; invalid values restored to the default enabled state |
+| Resume an existing job with checkpoints disabled for new jobs | Completed 9000 frames while retaining the disabled preference for new jobs |
+| Comparison pipe path, 30 frames | Passed |
+| Existing CTest cases: paths, FPS, child processes | 3/3 passed |
 
-프레임 동일성은 **같은 저장 간격으로 변환한 결과끼리** 비교했습니다. 단일 인코더 경로와 구간 인코더 경로는 GOP 시작 위치와 압축 결과가 달라질 수 있습니다. 모든 콘텐츠에서 HDR 처리 재초기화 경계가 시각적으로 동일하다고 보장하는 검증은 아닙니다.
+Frame identity was compared **between conversions using the same checkpoint interval**. Single-encoder and segmented paths can differ in GOP boundaries and compressed output. These tests do not guarantee visual identity at HDR reinitialization boundaries for every type of content.
 
-## 저장 비용
+## Checkpoint overhead
 
-1080p 30fps 시험 입력의 첫 1800프레임을 RTX 4060으로 처리한 단일 측정입니다.
+A single measurement on the RTX 4060, processing the first 1800 frames of a 1080p 30 fps test input:
 
-| 처리 방식 | 처리 구간 시간 | 처리 FPS |
+| Mode | Processing time | Processing FPS |
 |---|---:|---:|
-| `--no-checkpoint` | 4.119초 | 437.0 |
-| 기본 10초 영상 간격 저장 | 4.850초 | 371.2 |
+| `--no-checkpoint` | 4.119 s | 437.0 |
+| Default saves every 10 seconds of video | 4.850 s | 371.2 |
 
-이 시험에서는 약 15% 낮은 FPS였습니다. 저장 시 인코더 마무리, 디스크 동기화, 해시 계산, 다음 구간의 디코더/인코더 초기화가 추가됩니다. 실행 시 부하·GPU·해상도·디스크에 따라 달라지며 일반적인 성능 저하율로 해석하면 안 됩니다. CLI의 `--checkpoint-seconds`로 간격을 늘릴 수 있지만, 중단 시 다시 처리할 구간도 늘어납니다. 재개 검증은 저장된 영상의 바이트를 읽어 해시를 확인하며 원본 전체를 디코딩하지 않습니다.
+FPS was about 15% lower in this test. Saving adds encoder finalization, disk synchronization, hashing, and decoder/encoder initialization for the next segment. Overhead varies with system load, GPU, resolution, and disk; this is not a general slowdown estimate. Increasing `--checkpoint-seconds` reduces save frequency but increases the segment that must be reprocessed after interruption. Resume validation reads saved video bytes to verify hashes and does not decode the entire source.
 
-## 재현
+## Reproduction
 
 ```powershell
 python tools/verify-checkpoint.py --input artifacts/first-test-sdr-tagged.mp4 --frames 240
@@ -45,4 +47,4 @@ python tools/verify-checkpoint.py --input artifacts/user-test-sdr.mp4 --frames 4
 ./tools/verify-gui.ps1 -BuildDirectory build-overlap
 ```
 
-위 입력 경로는 로컬 시험용입니다. 검증 도구의 `--input`, `--engine`, `--adapter`, `--frames`로 환경에 맞게 지정할 수 있습니다. 생성물은 `artifacts/checkpoint-test-*`에만 쓰고 전달한 원본을 수정하지 않습니다. GUI의 창 재실행 시험은 로컬 `artifacts/native-long-tagged.mp4`가 있을 때 실행합니다.
+These input paths are local fixtures. Set `--input`, `--engine`, `--adapter`, and `--frames` for your environment. The tool writes outputs only under `artifacts/checkpoint-test-*` and does not modify the supplied source. The GUI relaunch test runs when the local fixture `artifacts/native-long-tagged.mp4` is available.

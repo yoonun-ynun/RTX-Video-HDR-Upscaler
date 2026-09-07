@@ -1,74 +1,80 @@
-﻿# v0.4.0 추가 안내
+# Additional guidance for v0.4.0
 
-첫 실행에서 필수 구성 설치 버튼 또는 Setup-Runtime.cmd로 FFmpeg 공유 DLL과 도구를 설치하세요. 날짜가 고정된 공식 BtbN 배포와 SHA256을 사용합니다. 설치 후 GUI가 다시 열립니다. 기본 변환은 GPU 직접 전달 경로를 사용합니다. 기존 영상 선택·품질 저장·GPU 선택·MKV/MP4·취소 방법은 동일합니다.
+[English README](../README.md) | [한국어](ko/gui-v0.3.md)
 
-아래는 이전 버전부터 이어지는 사용 안내입니다.
+On first launch, use **Install required components** or `Setup-Runtime.cmd` to install FFmpeg shared DLLs and tools. The installer uses a date-pinned official BtbN release and SHA256 verification, then reopens the GUI. The default converter uses the direct GPU path. Video selection, saved quality settings, GPU selection, MKV/MP4 output, and cancellation work as before.
 
-# RTX Video HDR 업스케일러 GUI v0.3.5
+The guide below continues the documentation from earlier versions. The GUI currently uses Korean labels; button names in this English guide are translations.
 
-`RTXVideoHDR.exe`를 실행합니다. 같은 폴더의 `RTXVideoHDRConvert.exe`가 실제 변환을 담당하므로 두 실행 파일과 `.config`를 함께 보관하세요. Windows .NET Framework 4.8을 사용하며 별도 서버나 브라우저는 필요하지 않습니다.
+# RTX Video HDR Upscaler GUI v0.3.5
 
-1. 원본 영상을 선택하거나 창에 파일 하나를 끌어놓습니다. 영상을 바꾸면 저장 위치도 새 원본 옆의 HDR 파일명으로 자동 갱신됩니다. 수동 저장 경로도 초기화되며 선택한 MKV/MP4 형식은 유지됩니다.
-2. 저장 경로, 사용할 NVIDIA GPU, MKV/MP4 형식을 선택합니다.
-3. 품질 기준 CQ(기본 18) 또는 평균 비트레이트 VBR(Mbps)을 지정합니다.
-4. **HDR 업스케일링 시작**을 누릅니다. 프레임 수, 평균 속도, 추정 남은 시간과 로그가 표시됩니다.
-5. 완료 후 **결과 재생**, **저장 폴더** 버튼을 사용할 수 있습니다.
+Run `RTXVideoHDR.exe`. The neighboring `RTXVideoHDRConvert.exe` performs conversion, so keep both executables and the `.config` file together. The application uses Windows .NET Framework 4.8 and requires no separate server or browser.
 
-MKV와 MP4는 저장 컨테이너입니다. 두 형식 모두 HEVC Main10 / BT.2020 / PQ HDR 영상을 저장합니다. MKV는 오디오를 원본 그대로 복사하고, MP4는 호환성을 위해 AAC 320 kbps 목표로 재인코딩하며 hvc1과 faststart를 사용합니다. 해상도와 프레임률은 유지합니다. 자막과 챕터는 복사하지 않습니다.
+1. Choose a source video or drop one file onto the window. Changing the source automatically updates the output to an HDR filename beside the new source. Manually chosen output paths are reset; the selected MKV/MP4 format is preserved.
+2. Choose an output path, NVIDIA GPU, and MKV/MP4 format.
+3. Select quality-based CQ (default 18) or average bitrate VBR (Mbps).
+4. Click **Start HDR upscaling**. Frame count, average speed, estimated time remaining, and logs are displayed.
+5. After completion, use **Play result** or **Output folder**.
 
-GPU 목록은 변환 엔진의 DXGI 열거 결과를 사용합니다. 선택한 어댑터를 디코더, HDR 처리, 인코더에 모두 전달합니다. 인코더는 같은 DXGI 어댑터로 만든 D3D11 장치에 P010을 업로드하여 NVENC를 사용하므로 CUDA 번호와 DXGI 번호가 다른 상황에서 GPU를 잘못 고르는 것을 피합니다. 이 과정에도 프로세스 간 CPU 프레임 복사는 남아 있습니다.
+MKV and MP4 are containers. Both store HEVC Main10 / BT.2020 / PQ HDR video. MKV copies the original audio; MP4 re-encodes to AAC with a 320 kbps target for compatibility and uses hvc1 and faststart. Resolution and frame rate are preserved. Subtitles and chapters are not copied.
 
-전체 입력 사전 디코딩은 하지 않으며 변환 중 PTS를 검사합니다. **시험 변환**은 첫 432프레임만 처리합니다. 색 태그가 없는 확실한 SDR 영상에만 BT.709 간주 옵션을 사용합니다. 기존 출력은 덮어쓰지 않습니다. 취소 또는 작업 중 창 닫기는 현재 변환 프로세스를 중단하며, 엔진의 job 종료로 해당 FFmpeg 자식 프로세스도 정리합니다. 실패/취소의 임시 파일은 `rtxhdr-run-*`에 남습니다.
+The GPU list comes from the engine's DXGI enumeration. The selected adapter is passed to the decoder, HDR processor, and encoder. The encoder uploads P010 to a D3D11 device created on that same DXGI adapter and uses NVENC, avoiding incorrect GPU selection when CUDA and DXGI indices differ. This v0.3 path still copies frames between processes through CPU memory.
 
-## 확인한 항목
+The entire input is not pre-decoded; PTS is checked during conversion. **Preview conversion** processes only the first 432 frames. Use the BT.709 assumption only for known SDR video with missing color tags. Existing output is not overwritten. Cancellation or closing the window during a job stops its converter process; closing the engine's job object also cleans up its FFmpeg children. Failed/canceled jobs retain temporary files in `rtxhdr-run-*`.
 
-- RTX 5080/4060이 GPU 목록에 표시됨.
-- GUI에서 RTX 4060 + MP4 선택 후 1080p 240프레임 변환 완료, 진행 이벤트 수신 확인.
-- 해당 MP4 재디코딩 240프레임, HEVC Main10/hvc1/BT.2020/PQ와 AAC, 재생 길이 8초 확인.
-- GUI에서 변환 도중 취소 후 최종 결과 파일이 없는 것 확인.
-- 150% DPI 화면 배치를 렌더링해 글자·입력 칸·버튼 잘림 여부 확인.
-- GUI MKV/VBR, MP4/CQ, 취소 재현 검증은 `tools/verify-gui.ps1`로 실행한다.
-- 최신 엔진 MKV 경로는 GPU 색 변환 표본 검증 및 독립 출력 검증을 수행한다.
+## Verified items
 
-빌드는 `tools/build.ps1`이며 GUI만 빌드할 때는 `tools/build-gui.ps1`을 사용합니다. CLI도 남아 있습니다.
+- RTX 5080/4060 appeared in the GPU list.
+- GUI conversion on RTX 4060 to MP4 completed for a 1080p 240-frame input; progress events were received.
+- Re-decoding that MP4 produced 240 frames. HEVC Main10/hvc1/BT.2020/PQ, AAC, and eight-second playback duration were confirmed.
+- Canceling during GUI conversion left no final output file.
+- The layout was rendered at 150% DPI to check text, fields, and buttons for clipping.
+- Reproduce GUI MKV/VBR, MP4/CQ, and cancellation tests with `tools/verify-gui.ps1`.
+- The latest engine's MKV path is covered by GPU color sample checks and independent output validation.
+
+Use `tools/build.ps1` for the build or `tools/build-gui.ps1` for the GUI alone. The CLI remains available.
 
 ```powershell
 RTXVideoHDRConvert.exe --list-gpus
 RTXVideoHDRConvert.exe "input.mp4" --adapter 1 --output "output.mp4" --bitrate 40M
 ```
 
-기존 성능 측정은 [v0.2 기록](performance-v0.2.md)을 참고하세요. v0.3의 새 GPU 지정 인코딩 경로에 같은 수치를 보장하는 것은 아닙니다. 전체 23분 영상 완주와 모든 GPU/드라이버 조합은 아직 검증하지 않았습니다.
+See the [v0.2 record](performance-v0.2.md) for earlier performance measurements. Those rates are not guaranteed for v0.3's new GPU-specific encoding path. Completion of the entire 23-minute video and every GPU/driver combination remained unverified at this stage.
 
-## v0.3.1 GUI 수정
+## v0.3.1 GUI changes
 
-원본 변경 시 저장 경로 갱신 동작을 수정하고, 제목과 설명에 NVIDIA 드라이버의 RTX Video HDR 처리, HEVC 10비트 저장, 해상도·프레임률 유지 동작을 명시했습니다. MKV/MP4 경로 갱신, 수동 경로 초기화, 입력 제거 시 저장 경로 비우기 및 150% DPI 배치를 확인했습니다. 변환 엔진은 v0.3을 그대로 사용합니다.
+Fixed output-path updates when the source changes. The title and description now identify NVIDIA driver RTX Video HDR processing, HEVC 10-bit output, and preservation of resolution/frame rate. MKV/MP4 path updates, manual-path reset, clearing the output when the input is removed, and layout at 150% DPI were checked. The conversion engine remained v0.3.
 
-## v0.3.2 표시 문구 수정
+## v0.3.2 Wording changes
 
-제목을 “RTX Video HDR 업스케일러”로 변경하고 설명과 시작 버튼에 HDR 업스케일링을 명시했습니다. 여기서 업스케일링은 SDR→HDR 처리를 뜻하며, 해상도와 프레임률은 유지합니다.
+Changed the title to “RTX Video HDR Upscaler” and explicitly mentioned HDR upscaling in the description and start button. Here, upscaling means SDR-to-HDR processing; resolution and frame rate are preserved.
 
-## v0.3.3 설정 파일
+## v0.3.3 Settings file
 
-실행 파일 옆 `settings.ini`에 CQ/VBR 방식, CQ 값, 비트레이트(Mbps), MKV/MP4 형식, GPU 번호와 이름을 자동 저장하고 다음 실행 때 복원합니다. 시험 변환과 색 정보 간주 체크박스는 실행마다 초기화됩니다. 원본·출력 경로는 저장하지 않습니다.
+`settings.ini` beside the executable automatically saves CQ/VBR mode, CQ, bitrate in Mbps, MKV/MP4 format, and GPU index/name, then restores them on launch. Preview and assumed-color checkboxes reset each time. Source/output paths are not saved.
 
-설정 변경 시와 종료 시 저장하며 임시 파일을 쓴 뒤 교체합니다. 저장된 GPU가 없으면 사용 가능한 첫 GPU를, 범위를 벗어나거나 잘못된 값은 기본값을 사용합니다. 저장 권한 문제가 있으면 GUI 로그에 표시합니다.
+Settings are saved on changes and exit using a temporary file followed by replacement. If the saved GPU is missing, the first available GPU is used. Invalid or out-of-range values fall back to defaults. Permission failures appear in the GUI log.
 
-초기화하려면 종료 후 `settings.ini`를 삭제합니다. 새 배포 폴더로 이동할 때는 기존 설정 파일을 복사합니다. 별도 프로세스 종료·재실행으로 VBR/CQ 수치·MP4·GPU 복원을 검증했으며, 잘못된 값과 없는 GPU에 대한 기본값 처리도 확인했습니다. 재현 스크립트는 `tools/verify-gui-settings.ps1`입니다.
+To reset, close the application and delete `settings.ini`. Copy the existing settings file when moving to a new distribution folder. A separate process termination/relaunch test verified VBR/CQ values, MP4, and GPU restoration, as well as invalid-value and missing-GPU fallbacks. Reproduce with `tools/verify-gui-settings.ps1`.
 
-## v0.3.4 FPS 표시
+## v0.3.4 FPS display
 
-최근 5초 처리량과 누적 평균을 분리하고, 남은 시간은 최근 속도를 기준으로 계산합니다. 초기 5초 미만은 실제 경과 구간을 사용합니다. 단조 증가 시계로 인코더에 전달한 프레임 처리량을 계산하며 GPU 연산 전용 속도가 아닙니다. 마지막 인코더 종료·오디오 처리·파일 마무리는 제외합니다. 프레임 완료 시 약 0.5초 간격으로 갱신하므로 대기가 길면 표시도 잠시 멈춥니다.
+Recent five-second throughput and cumulative average are shown separately; the remaining-time estimate uses recent speed. During the first five seconds, the actual elapsed interval is used. A monotonic clock measures frames delivered to the encoder, not GPU-only execution. Final encoder shutdown, audio processing, and file finalization are excluded. Updates occur about every 0.5 seconds as frames complete, so a long wait also temporarily pauses the display.
 
-결정적 시간/프레임 시퀀스 테스트에서 일정 속도의 평균 유지, 초반 고속 이후 최근 속도와 누적 평균의 분리, 정체 구간, 느린 시작을 확인했습니다. 실시간 표시를 변경한 것이며 처리 속도를 높이는 최적화는 아닙니다.
+Deterministic time/frame sequences verified a stable average at constant speed, separation of recent speed and cumulative average after a fast start, stalls, and slow startup. This changes live reporting; it is not a throughput optimization.
 
-## v0.3.5 영상 완료·오디오 muxing 상태
+## v0.3.5 Video completion and audio muxing status
 
-표준 출력이 GUI 파이프로 연결되면 줄바꿈만으로 문구가 즉시 전달되지 않을 수 있었습니다. 엔진의 단계 메시지에 명시적 flush를 추가하고 인코더 마무리, 오디오 복사/AAC muxing, 결과 검사, 최종 저장을 별도 이벤트로 전달합니다.
+When stdout was connected to the GUI pipe, a newline did not always deliver text immediately. Stage messages now explicitly flush, and separate events report encoder finalization, audio copy/AAC muxing, output validation, and final saving.
 
-마지막 프레임 이후에는 인코더 마무리 안내와 프레임 처리 100%를 표시합니다. muxing부터는 작업 중 표시로 전환하며 과거 FPS 메시지가 늦게 도착해도 상태가 영상 처리 단계로 되돌아가지 않도록 했습니다. 전체 완료는 엔진 성공 종료 및 최종 파일 확인 후에만 표시합니다.
+After the last frame, the GUI displays encoder finalization and 100% frame progress. Muxing switches to an activity indicator. Late FPS messages cannot revert the display to video processing. Overall completion appears only after successful engine exit and confirmation of the final file.
 
-## 이어서 변환 (v0.4.1)
+## Resume conversion (v0.4.1)
 
-실패·취소 후 **이어서 변환** 버튼에서 작업 폴더의 `checkpoint.txt`를 선택하세요. 저장된 품질/GPU/출력 설정을 복원합니다. 기본 GPU 경로는 원본 영상 약 10초마다 저장하고, 미완료 구간만 다시 처리합니다. 영상 처리가 끝났으면 오디오 결합 또는 결과 저장부터 재개합니다. 마지막 작업 위치는 앱을 다시 켜도 기억합니다. 원본과 작업 폴더 전체를 보관하고, 작업이 끝나기 전 빌드/DLL 및 NVIDIA App 효과 설정을 바꾸지 마세요. 자세한 제한과 진단 파일 설명은 README의 재개 항목을 참고하세요.
+After failure or cancellation, click **Resume conversion** and select the job folder's `checkpoint.txt`. Quality, GPU, and output settings are restored. The default GPU path saves roughly every 10 seconds of source video and reprocesses only the unfinished segment. If video processing is complete, it resumes at audio muxing or final saving. The most recent job location persists across launches. Keep the source and entire job folder, and do not change the build/DLLs or NVIDIA App effect settings before completion. See the README's resume section for detailed limits and diagnostic files.
 
-**새 변환에서 구간 저장 (재개 지원)** 체크박스로 저장 비용과 재개 기능을 선택합니다. 기본값은 켜짐이고, 끄면 속도를 우선하며 해당 새 작업은 재개할 수 없습니다. 선택은 `settings.ini`의 `checkpoint` 항목에 저장됩니다. 기존 작업의 **이어서 변환**에는 새 작업용 선택이 영향을 주지 않습니다.
+The **Save segments for new conversions (resume support)** checkbox lets you choose between checkpoint overhead and resume support. It is enabled by default. Disabling it prioritizes speed and makes that new job non-resumable. The selection is saved in the `checkpoint` setting in `settings.ini`. It does not affect **Resume conversion** for existing jobs.
+
+## Automatic cleanup after completion (v0.4.2-dev)
+
+After successful audio muxing, validation, and final saving, **Cleaning intermediate files** appears while large temporary files, including segment videos, are deleted. Logs and checkpoint metadata remain. Failed/canceled jobs preserve resume files. If some files cannot be removed, the GUI reports conversion success with a cleanup notice and records details in `cleanup.json`. Reopening a completed checkpoint job verifies the final output and retries cleanup of remaining files.

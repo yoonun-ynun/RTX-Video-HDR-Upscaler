@@ -25,7 +25,7 @@ internal static class GuiSmokeTest {
             if(cancel && f.SawProgress && f.Running!=null) f.CancelConversion();
             if(f.Finished) {
                 bool rates=f.LastProgress.Contains("최근 5초") && f.LastProgress.Contains("누적 평균");
-                string expected="video_finalize,"+(args[1].EndsWith(".mp4")?"mux_aac":"mux_copy")+",verify,finalize";
+                string expected="video_finalize,"+(args[1].EndsWith(".mp4")?"mux_aac":"mux_copy")+",verify,finalize,cleanup";
                 bool stages=String.Join(",",f.StageHistory)==expected;
                 exit=cancel?(!f.Succeeded && !File.Exists(args[1]) && f.SawProgress && rates?0:1):(f.Succeeded && f.SawProgress && rates && stages?0:1);
                 if(!routing)exit=1;

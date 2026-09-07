@@ -17,7 +17,7 @@ internal sealed class HdrWindow : Form
     readonly NumericUpDown bitrate = new NumericUpDown(), cq = new NumericUpDown();
     internal readonly CheckBox Checkpoint = new CheckBox();
     readonly Label checkpointHint = new Label();
-    bool activeCheckpoint, rememberedCheckpoint;
+    bool activeCheckpoint, rememberedCheckpoint, cleanupWarning;
     readonly CheckBox preview = new CheckBox(), assume = new CheckBox();
     readonly Button resume = new Button();
     readonly Button start = new Button(), cancel = new Button(), play = new Button(), folder = new Button();
@@ -285,7 +285,7 @@ internal sealed class HdrWindow : Form
             }};
             // Inherit the native environment without rebuilding .NET's case-insensitive
             // dictionary: some launchers supply both Path and PATH.
-            activeCheckpoint=checkpoint!=null||Checkpoint.Checked;rememberedCheckpoint=false;
+            activeCheckpoint=checkpoint!=null||Checkpoint.Checked;rememberedCheckpoint=cleanupWarning=false;
             Running=p; Finished=Succeeded=SawProgress=cancelled=false; completedOutput=output; logDirectory="";
             processingStage=0;StageHistory.Clear();LastProgress="";
             log.Clear(); Busy(true); progress.Style=ProgressBarStyle.Marquee; Status.Text="입력 확인 및 HDR 준비 중…";
@@ -305,6 +305,7 @@ internal sealed class HdrWindow : Form
     }
     void Dispatch(Action action) { if(!IsDisposed && IsHandleCreated) {try {BeginInvoke(action);} catch(InvalidOperationException) {}} }
     void Receive(string line) {
+        if(line.StartsWith("RTXHDR_CLEANUP_WARNING ")) {cleanupWarning=true;log.AppendText("결과 영상은 완료됐지만 일부 중간 파일 정리가 남았습니다. cleanup.json을 확인하세요."+Environment.NewLine);return;}
         if(line.StartsWith("RTXHDR_INPUT ")) {Input.Text=line.Substring(13).Trim();return;}
         if(line.StartsWith("RTXHDR_OUTPUT ")) {completedOutput=line.Substring(14).Trim();FormatChoice.SelectedIndex=completedOutput.EndsWith(".mp4",StringComparison.OrdinalIgnoreCase)?1:0;Output.Text=completedOutput;return;}
         if(line.StartsWith("RTXHDR_JOB_SETTINGS ")) {
@@ -364,10 +365,14 @@ internal sealed class HdrWindow : Form
             case "finalize":
                 next=4;title="결과 파일 저장 마무리 중";
                 message="지정한 저장 위치에 최종 파일을 저장하고 있습니다.";break;
+            case "cleanup":
+                next=5;title="결과 저장 완료 · 중간 파일 정리 중";
+                message="완료된 결과를 보존하고 큰 중간 영상 파일을 삭제합니다. 로그는 남깁니다.";break;
             default:return;
         }
         if(cancelled || next<=processingStage) return;
         processingStage=next;StageHistory.Add(stage);
+        if(next==5)cancel.Enabled=false;
         Status.Text=title;detail.Text=message;
         progress.Style=next==1?ProgressBarStyle.Blocks:ProgressBarStyle.Marquee;
         if(next==1) progress.Value=1000;
@@ -386,9 +391,9 @@ internal sealed class HdrWindow : Form
         Running.Dispose(); Running=null; Finished=true;
         Succeeded=code==0 && File.Exists(completedOutput);
         progress.Style=ProgressBarStyle.Blocks;progress.Value=Succeeded?1000:0;Busy(false);
-        Status.Text=Succeeded?"HDR 변환 완료":cancelled?"변환을 취소했습니다":"변환에 실패했습니다";
+        Status.Text=Succeeded?(cleanupWarning?"HDR 변환 완료 · 중간 파일 정리 일부 남음":"HDR 변환 완료"):cancelled?"변환을 취소했습니다":"변환에 실패했습니다";
         bool canResume=!String.IsNullOrEmpty(logDirectory)&&File.Exists(Path.Combine(logDirectory,"checkpoint.txt"));
-        detail.Text=Succeeded?completedOutput:canResume?"‘이어서 변환’에서 checkpoint.txt를 선택하세요. "+logDirectory:
+        detail.Text=Succeeded?(cleanupWarning?"결과 영상: "+completedOutput+" · 정리 내역은 cleanup.json 참고":completedOutput):canResume?"‘이어서 변환’에서 checkpoint.txt를 선택하세요. "+logDirectory:
             !activeCheckpoint?"구간 저장을 끈 작업은 재개할 수 없습니다. 로그: "+logDirectory:"저장된 재개 지점이 없습니다. 로그: "+logDirectory;
         if(closing) Close();
     }
@@ -402,11 +407,12 @@ internal sealed class HdrWindow : Form
             string directory=Directory.Exists(logDirectory)?logDirectory:Path.GetDirectoryName(settingsPath);
             long free=-1;try {free=new DriveInfo(Path.GetPathRoot(directory)).AvailableFreeSpace;}catch(IOException){}
             string path=Path.Combine(directory,"gui-exit-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N")+".json");
-            File.WriteAllText(path,"{\"version\":\"0.4.1\",\"cancelled\":"+(cancelled?"true":"false")+",\"exit_code\":"+code+",\"stage\":"+processingStage+",\"last_progress\":"+Json(LastProgress)+",\"available_disk_bytes\":"+free+",\"command\":"+Json(Running.StartInfo.Arguments)+",\"log\":"+Json(log.Text)+"}",new UTF8Encoding(false));
+            File.WriteAllText(path,"{\"version\":\"0.4.2-dev\",\"cancelled\":"+(cancelled?"true":"false")+",\"exit_code\":"+code+",\"stage\":"+processingStage+",\"last_progress\":"+Json(LastProgress)+",\"available_disk_bytes\":"+free+",\"command\":"+Json(Running.StartInfo.Arguments)+",\"log\":"+Json(log.Text)+"}",new UTF8Encoding(false));
         }catch(Exception e){log.AppendText("종료 진단 저장 실패: "+e.Message+Environment.NewLine);}
     }
     internal void CancelConversion() {
         if(Running==null) return;
+        if(processingStage>=5) {cancel.Enabled=false;Status.Text="결과 저장 완료 · 중간 파일 정리 중";return;}
         cancelled=true;cancel.Enabled=false;Status.Text="변환을 중단하는 중…";
         // The converter owns a KILL_ON_JOB_CLOSE job for FFmpeg children.
         // Killing this process closes that job too, without targeting other conversions.

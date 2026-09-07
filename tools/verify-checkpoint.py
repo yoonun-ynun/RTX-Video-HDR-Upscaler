@@ -52,25 +52,25 @@ def fresh(name, **kwargs):
 def checksum(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
-baseline, (code, text, _) = fresh('baseline.mkv')
+baseline, (code, text, baselinejob) = fresh('baseline.mkv')
 assert code == 0, text
 resumed, (code, text, job) = fresh('resumed.mkv', stop='RTXHDR_CHECKPOINT ')
 assert code != 0 and job.exists(), text
 saved = {f: checksum(f) for f in job.parent.rglob('video.mkv') if f.stat().st_size > 1000}
-code, text, _ = run(['--resume', str(job)])
+code, text, _ = run(['--resume', str(job), '--keep-intermediates'])
 assert code == 0, text
 assert re.search(r'\b(6[1-9]|[7-9]\d|\d{3,}) frames', text), text
 for f, digest in saved.items():
     assert checksum(f) == digest, 'Saved segment was modified'
 
 muxed, (code, text, muxjob) = fresh('mux-resume.mp4', stop='RTXHDR_STAGE mux_aac')
-assert code != 0, text
+assert code != 0 and list(muxjob.parent.rglob('video.mkv')), text
 code, text, _ = run(['--resume', str(muxjob)])
 assert code == 0 and not re.search(r'\d+ frames', text), text
 
 conflict = (root / 'publish-resume.mkv').resolve()
 _, (code, text, publishjob) = fresh('publish-resume.mkv', conflict=conflict)
-assert code != 0 and conflict.read_bytes() == b'test-owned output conflict', text
+assert code != 0 and conflict.read_bytes() == b'test-owned output conflict' and list(publishjob.parent.rglob('video.mkv')), text
 errors = list(publishjob.parent.rglob('error.json'))
 assert errors
 error = json.loads(errors[-1].read_text(encoding='utf-8-sig'))
@@ -81,15 +81,32 @@ assert code == 0 and not re.search(r'\d+ frames', text), text
 code, text, _ = run(['--resume', str(publishjob)])
 assert code == 0, 'Recovery after publish / before success acknowledgement: ' + text
 
-# Corrupt a copy of a finished job, leaving its original and output untouched.
+# Corrupt a copy of an unfinished job: final output does not yet exist.
 import shutil
+_, (code, text, corruptjob) = fresh('corrupt-input.mkv', stop='RTXHDR_CHECKPOINT ')
+assert code != 0 and list(corruptjob.parent.rglob('video.mkv'))
 damaged = root / 'damaged-job'
-shutil.copytree(job.parent, damaged)
+shutil.copytree(corruptjob.parent, damaged)
 part = next(damaged.rglob('video.mkv'))
 with part.open('r+b') as f:
     f.seek(100);f.write(b'corrupt-checkpoint-test')
 code, text, _ = run(['--resume', str(damaged / 'checkpoint.txt')])
 assert code != 0 and 'damaged' in text, text
+
+# Completed output recovery must work after previous cleanup removed all segments.
+code, text, _ = run(['--resume', str(job)])
+assert code == 0 and 'RTXHDR_STAGE cleanup' in text, text
+code, text, _ = run(['--resume', str(job)])
+assert code == 0 and not re.search(r'\d+ frames', text), text
+
+def assert_clean(checkpoint):
+    for name in ('video.mkv', 'completed.mp4', 'completed.mkv'):
+        assert not list(checkpoint.parent.rglob(name)), (checkpoint, name)
+    assert list(checkpoint.parent.rglob('native.log')) and checkpoint.exists()
+    reports = [json.loads(f.read_text(encoding='utf-8-sig')) for f in checkpoint.parent.rglob('cleanup.json')]
+    assert reports and all(r['status']=='completed' for r in reports), reports
+for checkpoint in (baselinejob, job, muxjob, publishjob):
+    assert_clean(checkpoint)
 
 # A second owner cannot open this job while its lock is held.
 import ctypes
@@ -135,6 +152,23 @@ assert code != 0 and changedjob.exists()
 stat = owned_input.stat();os.utime(owned_input, ns=(stat.st_atime_ns, stat.st_mtime_ns+1000000000))
 code, text, _ = run(['--resume', str(changedjob)])
 assert code != 0 and 'Original file changed' in text, text
+
+# A locked intermediate must not turn an already published result into failure.
+cleanup_handles=[]
+def lock_cleanup(line, checkpoint):
+    if not cleanup_handles and 'RTXHDR_STAGE mux_' in line:
+        candidate=next(checkpoint.parent.rglob('video.mkv'))
+        handle=kernel.CreateFileW(str(candidate),0x80000000,1,None,3,128,None)
+        assert handle != wintypes.HANDLE(-1).value
+        cleanup_handles.append(handle)
+try:
+    locked_output,(code,text,cleanupjob)=fresh('cleanup-warning.mkv',hook=lock_cleanup)
+    assert code == 0 and locked_output.exists() and 'RTXHDR_CLEANUP_WARNING' in text, text
+    assert list(cleanupjob.parent.rglob('video.mkv'))
+finally:
+    for handle in cleanup_handles:kernel.CloseHandle(handle)
+code,text,_=run(['--resume',str(cleanupjob)])
+assert code == 0 and not list(cleanupjob.parent.rglob('video.mkv')), text
 
 # Verify frame count, decoded pixels, timestamps, HDR tags, and audio packets.
 subprocess.run([sys.executable, 'tools/verify-overlap.py', str(baseline), str(resumed), '--frames', a.frames], check=True)

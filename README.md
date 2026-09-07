@@ -8,14 +8,14 @@ English | **[한국어 문서 (Korean)](docs/ko/README.md)**
 
 Choose a video, GPU, output format, and quality in the GUI. The output is **HEVC Main10 · BT.2020 · PQ**, saved as MKV or MP4. All conversion runs locally on your PC.
 
-> Latest public release: **v0.4.1 — optional checkpoints, interrupted job resume, and improved diagnostics**
-> Current source/local build: **v0.4.2-dev — automatic intermediate video cleanup after successful conversion**
+> Latest release: **v0.4.2 — English/Korean GUI selection and automatic intermediate cleanup**
 > The original resolution and frame rate are preserved. Spatial resolution upscaling and frame interpolation are not included.
 
 [Technology](#technology) · [NGX HDR comparison](#how-does-this-differ-from-ngx-hdr-truehdr) · [Pipeline](#how-it-works) · [GUI guide](#gui-guide) · [CLI guide](#command-line-usage) · [Troubleshooting](#troubleshooting) · [Build](#building-from-source)
 
 ## Features
 
+- Switch between English and Korean in the GUI; your choice is saved
 - Convert one video through a file picker or drag and drop
 - Select an NVIDIA GPU for decoding, HDR processing, and encoding
 - Save MKV or MP4 with bitrate or CQ quality settings
@@ -101,7 +101,9 @@ Tested configurations include RTX 5080 / RTX 4060, NVIDIA driver 616.56, FFmpeg 
 
 ## GUI guide
 
-The GUI currently uses Korean labels. Control names below are translated for reference; the [Korean guide](docs/ko/README.md#gui-사용법) uses the labels shown in the application.
+Use the **Language / 언어** dropdown at the top right to select **English** or **한국어**. Labels, progress stages, application error messages, and file-picker titles update immediately, including during conversion. Switching language preserves the current job, source/output paths, and quality settings.
+
+The selection is saved as `language=en` or `language=ko` in the `[interface]` section of `settings.ini`. With no valid saved choice, the GUI starts in Korean on Korean Windows and English otherwise. Existing settings files remain compatible. Earlier log entries are retained as recorded; raw engine/FFmpeg diagnostics remain in their original language, and Windows-owned dialog controls follow Windows settings.
 
 ### 1. Launch the application
 
@@ -141,7 +143,7 @@ After the last frame, encoder output, audio processing, and container work may r
 2. **Video complete · Muxing audio** — MKV copies audio; MP4 converts to AAC and builds the file. Without audio, only the video container is created.
 3. **Video and audio processed · Checking output** — checks codecs and HDR color metadata.
 4. **Finalizing output file** — saves the file at its final path.
-5. **Output saved · Cleaning intermediate files** — the v0.4.2-dev build removes large temporary files and keeps logs.
+5. **Output saved · Cleaning intermediate files** — the v0.4.2 build removes large temporary files and keeps logs.
 6. **HDR conversion complete** — displayed after the engine exits successfully and the final file exists.
 
 From audio muxing through final saving, the GUI hides FPS and video-based time estimates and shows an activity indicator. The engine flushes stage notifications immediately so buffered output does not leave stale FPS information on screen.
@@ -181,6 +183,7 @@ A bitrate that is too low can reduce image quality through compression. Higher v
 
 Output quality settings are saved immediately to **`settings.ini`** beside the executable and restored on the next launch:
 
+- Interface language (English/Korean)
 - Encoding mode (CQ/VBR), CQ value, and average bitrate
 - Output format (MKV/MP4), selected GPU index and name
 - The checkpoint preference described under [Resuming failed or canceled jobs](#resuming-failed-or-canceled-jobs)
@@ -344,7 +347,7 @@ Resume reads saved segments to verify their hashes, but **does not decode the en
 Saved segments are concatenated without re-encoding. Original audio is copied or converted to AAC only once at the end, avoiding cumulative delays that could result from re-encoding MP4 audio per segment. Recent/average FPS count frames newly processed in this attempt; overall progress also includes restored segments.
 
 - **Keep the entire rtxhdr-run folder together**, including the checkpoint and segments. Moving only `checkpoint.txt` is insufficient for resume.
-- In the current development build, successful audio muxing, output validation, and final saving trigger automatic removal of intermediate videos and large raw frame files. Logs and small job metadata remain. During processing, extra disk space is needed for the segment total and final output.
+- In the current build, successful audio muxing, output validation, and final saving trigger automatic removal of intermediate videos and large raw frame files. Logs and small job metadata remain. During processing, extra disk space is needed for the segment total and final output.
 - Temporary files from older versions without checkpoints cannot resume through this mechanism.
 - Segment resume is unavailable on the `--pipe-video`, `--serial-pipeline`, `--software-decode`, `--cpu-color`, and `--diagnostics` comparison paths.
 
@@ -367,7 +370,7 @@ If the GUI cancels a job or the engine exits abnormally, a separate `gui-exit-*.
 
 See the [validation record](docs/checkpoint-validation.md) for resume/failure-injection tests and checkpoint overhead. Segment saves require extra encoder initialization and disk writes and can reduce speed.
 
-### Automatic intermediate cleanup after success (v0.4.2-dev)
+### Automatic intermediate cleanup after success (v0.4.2)
 
 After conversion, the GUI enters **Output saved · Cleaning intermediate files**. Resume files are not deleted before final publication or after failure/cancellation. Successful cleanup also applies to the single-encoder and pipe paths with checkpoints disabled.
 

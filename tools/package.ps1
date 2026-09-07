@@ -1,4 +1,4 @@
-﻿param([string]$Version = '0.4.1', [string]$OutputDirectory, [string]$BuildDirectory)
+﻿param([string]$Version = '0.4.2', [string]$OutputDirectory, [string]$BuildDirectory)
 $ErrorActionPreference = 'Stop'
 if ($Version -notmatch '^\d+\.\d+(\.\d+)?$') { throw 'Invalid release version' }
 $repo = Split-Path -Parent $PSScriptRoot
@@ -15,9 +15,6 @@ Copy-Item -LiteralPath "$BuildDirectory\Release\RTXVideoHDRConvert.exe" -Destina
 Copy-Item -LiteralPath "$BuildDirectory\Release\RTXVideoHDR.exe" -Destination "$destination\RTXVideoHDR.exe"
 Copy-Item -LiteralPath "$BuildDirectory\Release\RTXVideoHDR.exe.config" -Destination "$destination\RTXVideoHDR.exe.config"
 Copy-Item -LiteralPath "$repo\src\default-settings.ini" -Destination "$destination\settings.ini"
-Copy-Item -LiteralPath "$repo\docs\checkpoint-validation.md" -Destination "$destination\test-results.md"
-Copy-Item -LiteralPath "$repo\docs\gui-v0.3.md" -Destination "$destination\사용법.md"
-Copy-Item -LiteralPath "$repo\docs\performance-v0.2.md" -Destination "$destination\performance-v0.2.md"
 Copy-Item -LiteralPath "$repo\README.md" -Destination "$destination\README.md"
 Copy-Item -LiteralPath "$repo\docs" -Destination "$destination\docs" -Recurse
 New-Item -ItemType Directory -Path "$destination\tools" | Out-Null

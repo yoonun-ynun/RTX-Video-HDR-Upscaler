@@ -12,6 +12,7 @@ internal static class GuiStagesTest {
         Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
         int result=1;
         using(HdrWindow f=new HdrWindow(args[0]+".ini")) {
+            f.Language.SelectedIndex=1;
             f.Opacity=0;f.ShowInTaskbar=false;
             f.Shown+=delegate {
                 try {

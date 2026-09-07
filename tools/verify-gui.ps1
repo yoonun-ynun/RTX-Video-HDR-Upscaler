@@ -1,4 +1,4 @@
-﻿param([string]$InputVideo, [string]$BuildDirectory)
+﻿param([string]$InputVideo, [string]$BuildDirectory, [ValidateSet('ko','en')][string]$Language = 'ko', [switch]$SkipResume)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 if (!$BuildDirectory) { $BuildDirectory = Join-Path $repo 'build' }
@@ -16,7 +16,7 @@ foreach ($case in @(@('mkv','vbr'), @('mp4','cq'), @('mkv','cancel'), @('mkv','f
     $output = Join-Path $run "$name.$($case[0])"
     $screenshot = Join-Path $run "$name.png"
     # Quotes are Windows filename-safe; no shell is passed to the GUI or engine.
-    $arguments = '"' + $InputVideo + '" "' + $output + '" "' + $screenshot + '" ' + $name
+    $arguments = '"' + $InputVideo + '" "' + $output + '" "' + $screenshot + '" ' + $name + ' ' + $Language
     $process = Start-Process -FilePath "$BuildDirectory\Release\GuiSmokeTest.exe" -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
     Get-Content -LiteralPath "$screenshot.txt"
     if ($process.ExitCode -ne 0) { throw "GUI test failed: $name" }
@@ -34,7 +34,7 @@ Write-Output "GUI tests passed: $run"
 if ($LASTEXITCODE -ne 0) { throw 'GUI resume test compilation failed' }
 Copy-Item -LiteralPath "$repo\src\gui.config" -Destination "$BuildDirectory\Release\GuiResumeTest.exe.config"
 $resumeInput = Join-Path $repo 'artifacts\native-long-tagged.mp4'
-if (Test-Path -LiteralPath $resumeInput) {
+if (!$SkipResume -and (Test-Path -LiteralPath $resumeInput)) {
     $resumeOutput = Join-Path $run 'resume.mkv'
     $resumeArgs = '"' + $resumeInput + '" "' + $resumeOutput + '"'
     $resumeProcess = Start-Process -FilePath "$BuildDirectory\Release\GuiResumeTest.exe" -ArgumentList $resumeArgs -WindowStyle Hidden -Wait -PassThru

@@ -4,7 +4,7 @@
 
 On first launch, use **Install required components** or `Setup-Runtime.cmd` to install FFmpeg shared DLLs and tools. The installer uses a date-pinned official BtbN release and SHA256 verification, then reopens the GUI. The default converter uses the direct GPU path. Video selection, saved quality settings, GPU selection, MKV/MP4 output, and cancellation work as before.
 
-The guide below continues the documentation from earlier versions. The GUI currently uses Korean labels; button names in this English guide are translations.
+The guide below continues the documentation from earlier versions. v0.4.2 supports both English and Korean; choose the language in the GUI.
 
 # RTX Video HDR Upscaler GUI v0.3.5
 
@@ -75,6 +75,14 @@ After failure or cancellation, click **Resume conversion** and select the job fo
 
 The **Save segments for new conversions (resume support)** checkbox lets you choose between checkpoint overhead and resume support. It is enabled by default. Disabling it prioritizes speed and makes that new job non-resumable. The selection is saved in the `checkpoint` setting in `settings.ini`. It does not affect **Resume conversion** for existing jobs.
 
-## Automatic cleanup after completion (v0.4.2-dev)
+## Automatic cleanup after completion (v0.4.2)
 
 After successful audio muxing, validation, and final saving, **Cleaning intermediate files** appears while large temporary files, including segment videos, are deleted. Logs and checkpoint metadata remain. Failed/canceled jobs preserve resume files. If some files cannot be removed, the GUI reports conversion success with a cleanup notice and records details in `cleanup.json`. Reopening a completed checkpoint job verifies the final output and retries cleanup of remaining files.
+
+## Interface language (v0.4.2)
+
+Select **English** or **한국어** from the **Language / 언어** dropdown at the top right. The interface updates immediately, even while converting, without resetting paths, quality settings, or job progress. The choice is restored from `[interface] language=en/ko` in `settings.ini` on the next launch. Missing/invalid values use Korean on Korean Windows and English elsewhere. Old settings files remain supported.
+
+Application labels, stage messages, input errors, and file-picker titles are localized. Existing log history and engine/FFmpeg diagnostics stay as recorded; Windows-owned dialog buttons use Windows settings.
+
+Validation covers both languages, switching during progress and mux/cleanup stages, preserving paths/settings, translated input errors, fresh-process language restoration, default/legacy settings, and layout at 150% DPI. Run `tools/verify-gui-language.ps1 -BuildDirectory <build-folder>`. Actual conversion tests support `tools/verify-gui.ps1 -BuildDirectory <build-folder> -Language en` or `-Language ko`.

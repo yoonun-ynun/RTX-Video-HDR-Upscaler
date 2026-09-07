@@ -1,4 +1,4 @@
-﻿#include "pipeline.h"
+#include "pipeline.h"
 #ifdef RTXHDR_NATIVE
 #include "native_video.h"
 #endif
@@ -170,7 +170,7 @@ int wmain(int argc,wchar_t** argv) {
         for(int i=resuming?argc:1;i<argc;++i) {
             std::wstring arg=argv[i];
             if(arg==L"--help") {
-                std::cout << "RTX Video HDR Convert v0.4.2-dev\nRTXVideoHDRConvert input.mp4 [--output output.hdr.mkv] [--adapter 0]\n"
+                std::cout << "RTX Video HDR Convert v0.4.2\nRTXVideoHDRConvert input.mp4 [--output output.hdr.mkv] [--adapter 0]\n"
                     "  [--ffmpeg-dir DIRECTORY] [--assume-bt709] [--max-frames N] [--bitrate 40M | --cq 18]\n"
                     "  [--software-decode] [--cpu-color] [--verify-full] [--diagnostics] [--serial-pipeline] [--pipe-video]\n"
                     "Resume: RTXVideoHDRConvert --resume PATH/checkpoint.txt\n"
@@ -275,7 +275,7 @@ int wmain(int argc,wchar_t** argv) {
         } else {run=CreateRunDirectory(output);std::cout<<"Logs: "<<Utf8(run.c_str())<<'\n'<<std::flush;}
 
         auto ffmpeg=FindTool(L"ffmpeg.exe",toolDirectory),ffprobe=FindTool(L"ffprobe.exe",toolDirectory);
-        std::cout << "RTX Video HDR Convert v0.4.2-dev\nInput: " << Utf8(input.c_str()) << '\n';
+        std::cout << "RTX Video HDR Convert v0.4.2\nInput: " << Utf8(input.c_str()) << '\n';
         currentStage="input_probe";
         auto v=Probe(ffprobe,input,run,assume,maxFrames);
         currentStage="hdr_prepare";
@@ -501,7 +501,7 @@ int wmain(int argc,wchar_t** argv) {
         if(!MoveFileExW(FileSystemPath(completed).c_str(),FileSystemPath(output).c_str(),MOVEFILE_WRITE_THROUGH))
             throw Failure(6,FileError("Cannot finalize output",output,GetLastError()));
         std::ostringstream report;
-        report << "{\"status\":\"completed\",\"test_version\":\"0.4.2-dev\",\"frames\":" << count
+        report << "{\"status\":\"completed\",\"test_version\":\"0.4.2\",\"frames\":" << count
             << ",\"hdr_effect_mae\":" << (resumable&&restoredFrames==count?"null":std::to_string(effect)) << ",\"input\":" << JsonString(Utf8(input.c_str()))
             << ",\"output\":" << JsonString(Utf8(output.c_str()))
             << ",\"width\":" << v.width << ",\"height\":" << v.height
@@ -542,7 +542,7 @@ int wmain(int argc,wchar_t** argv) {
             try {
                 ULARGE_INTEGER free{};GetDiskFreeSpaceExW(FileSystemPath(run).c_str(),&free,nullptr,nullptr);
                 const auto elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-attemptStart).count();
-                std::ostringstream error;error<<"{\"version\":\"0.4.2-dev\",\"backend\":"<<JsonString(backend)<<",\"stage\":"<<JsonString(currentStage)
+                std::ostringstream error;error<<"{\"version\":\"0.4.2\",\"backend\":"<<JsonString(backend)<<",\"stage\":"<<JsonString(currentStage)
                     <<",\"last_submitted_frame_count\":"<<lastFrame<<",\"saved_frame_count\":"<<savedFrames<<",\"elapsed_seconds\":"<<elapsed
                     <<",\"available_disk_bytes\":"<<free.QuadPart<<",\"gpu\":"<<gpuState<<",\"device_removed_hresult\":";
                 if(diagnosticDevice)error<<diagnosticDevice->GetDeviceRemovedReason();else error<<"null";

@@ -10,6 +10,7 @@ static const char* P010PackSource=R"(
 Texture2D<float4> rgb : register(t0);
 #ifdef SDR_HDR_COMPARE
 Texture2D<float4> sdr : register(t1);
+cbuffer Comparison : register(b0) { float sdrWhiteNits; float3 padding; };
 float linearSrgb(float c) { return c<=0.04045 ? c/12.92 : pow((c+0.055)/1.055,2.4); }
 float3 referencePQ(float3 c) {
     // DXGI RGB_FULL_G22_NONE_P709 specifies the piecewise sRGB curve.
@@ -17,8 +18,8 @@ float3 referencePQ(float3 c) {
     float3 wide=float3(dot(light,float3(0.627404,0.329283,0.043313)),
                        dot(light,float3(0.069097,0.919540,0.011362)),
                        dot(light,float3(0.016391,0.088013,0.895595)));
-    // Fixed SDR white: 203 cd/m2. This is a reference mapping, not HDR enhancement.
-    float3 p=pow(max(wide,0)*0.0203,2610.0/16384.0);
+    // Match the viewing display's SDR white; no HDR expansion is applied to this side.
+    float3 p=pow(max(wide,0)*(sdrWhiteNits/10000.0),2610.0/16384.0);
     return pow((3424.0/4096.0+(2413.0/128.0)*p)/(1+(2392.0/128.0)*p),2523.0/32.0);
 }
 #endif
@@ -273,7 +274,8 @@ void Pipeline::ConfigureProcessor(ID3D11VideoProcessor* processor, bool pq) {
     videoContext_->VideoProcessorSetOutputTargetRect(processor, TRUE, &rect);
     videoContext_->VideoProcessorSetStreamOutputRate(processor, 0, D3D11_VIDEO_PROCESSOR_OUTPUT_RATE_NORMAL, TRUE, nullptr);
 }
-void Pipeline::EnableComparison() {
+void Pipeline::EnableComparison(unsigned sdrWhiteNits) {
+    if(sdrWhiteNits<80 || sdrWhiteNits>1000)throw Failure(2,"SDR white must be 80..1000 nits");
     if(!processor_ || pq_ || packShader_ || texturePackShader_ || sdrProcessor_)
         throw Failure(2,"Enable comparison once, after resource creation and before processing");
     Check(video_->CreateVideoProcessor(enumerator_.Get(),0,&sdrProcessor_),"Create SDR reference processor");
@@ -286,6 +288,10 @@ void Pipeline::EnableComparison() {
     D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC view{};view.ViewDimension=D3D11_VPOV_DIMENSION_TEXTURE2D;
     Check(video_->CreateVideoProcessorOutputView(sdrOutput_.Get(),enumerator_.Get(),&view,&sdrOutputView_),"Create SDR reference output view");
     Check(device_->CreateShaderResourceView(sdrOutput_.Get(),nullptr,&sdrView_),"Create SDR reference shader view");
+    const float constants[4]{static_cast<float>(sdrWhiteNits),0,0,0};
+    D3D11_BUFFER_DESC buffer{};buffer.ByteWidth=sizeof(constants);buffer.Usage=D3D11_USAGE_IMMUTABLE;
+    buffer.BindFlags=D3D11_BIND_CONSTANT_BUFFER;D3D11_SUBRESOURCE_DATA data{};data.pSysMem=constants;
+    Check(device_->CreateBuffer(&buffer,&data,&comparisonConstants_),"Create comparison white constants");
 }
 void Pipeline::SetHdr(bool enable) {
     // Independently defined wire layout from the public vendor extension usage.
@@ -378,6 +384,7 @@ void Pipeline::PackP010() {
     }
     ID3D11ShaderResourceView* srv[]{rgbView_.Get(),sdrView_.Get()}; auto uav=packedView_.Get();
     context_->CSSetShader(packShader_.Get(),nullptr,0);
+    auto constants=comparisonConstants_.Get();context_->CSSetConstantBuffers(0,1,&constants);
     context_->CSSetShaderResources(0,2,srv); context_->CSSetUnorderedAccessViews(0,1,&uav,nullptr);
     context_->Dispatch((width_/2+15)/16,(height_/2+15)/16,1);
     srv[0]=srv[1]=nullptr;uav=nullptr;
@@ -432,6 +439,7 @@ void Pipeline::ProcessTexture(unsigned frame, ID3D11Texture2D* destination) {
     Blit(frame);
     ID3D11ShaderResourceView* srv[]{rgbView_.Get(),sdrView_.Get()};ID3D11UnorderedAccessView* uav[]{y.Get(),uv.Get()};
     context_->CSSetShader(texturePackShader_.Get(),nullptr,0);
+    auto constants=comparisonConstants_.Get();context_->CSSetConstantBuffers(0,1,&constants);
     context_->CSSetShaderResources(0,2,srv);context_->CSSetUnorderedAccessViews(0,2,uav,nullptr);
     context_->Dispatch((width_/2+15)/16,(height_/2+15)/16,1);
     srv[0]=srv[1]=nullptr;uav[0]=uav[1]=nullptr;

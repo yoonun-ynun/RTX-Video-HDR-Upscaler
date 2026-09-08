@@ -8,7 +8,7 @@ English | **[한국어 문서 (Korean)](docs/ko/README.md)**
 
 Choose a video, GPU, output format, and quality in the GUI. The output is **HEVC Main10 · BT.2020 · PQ**, saved as MKV or MP4. All conversion runs locally on your PC.
 
-> Latest release: **v0.4.3 — SDR/HDR split comparison for full videos and previews**
+> Latest release: **v0.4.4 — Match comparison SDR brightness to Windows**
 > The original resolution and frame rate are preserved. Spatial resolution upscaling and frame interpolation are not included.
 
 [Technology](#technology) · [NGX HDR comparison](#how-does-this-differ-from-ngx-hdr-truehdr) · [Pipeline](#how-it-works) · [GUI guide](#gui-guide) · [CLI guide](#command-line-usage) · [Troubleshooting](#troubleshooting) · [Build](#building-from-source)
@@ -198,7 +198,7 @@ To reset settings, close the application and delete `settings.ini`. Copy your ex
 - **Compare SDR / HDR: left SDR · right HDR** — output the left half of each frame as an SDR reference and the right half with RTX HDR. Enable this alone for the full video; also enable **Preview: first 432 frames** for a short sample. Default name: `source.compare.hdr.mkv` or `.mp4`. Checkpoints support resuming comparison jobs after failure or cancellation.
 - **Assume BT.709 for untagged SDR** — use only for known SDR video with missing color tags. It does not force conversion of known other color spaces or HDR input.
 
-The entire comparison file uses BT.2020/PQ HDR. The left side receives no HDR expansion; its SDR reference white is mapped to 203 nits in the HDR color space. This is not an exact match for the Windows SDR brightness slider or every SDR player. View it with HDR enabled on an HDR display and player. Additional GPU work can reduce conversion speed. Resolution, frame rate and the selected container’s audio handling are preserved. Comparison defaults to off on launch; resuming a job restores its saved comparison mode.
+The entire comparison file uses BT.2020/PQ HDR. **Windows auto** reads the Windows SDR white level of the HDR display containing the GUI when conversion starts, and applies it to the left SDR side. This fixes v0.4.3’s fixed 203-nit reference appearing too dark when Windows displays SDR at a higher brightness. Turn auto off to set **SDR nits** manually from 80 to 1000; auto/manual choice and the manual value persist across launches. If no HDR display value can be read, the GUI shows `Auto (203 fallback)`. Resume uses the brightness saved with that job. The right HDR effect is unchanged. A different display or an SDR tone-mapping player can look different; adjust to the actual viewing environment. Resolution, frame rate and container-specific audio handling are preserved; comparison adds GPU work. The comparison checkbox itself resets on launch.
 
 ## Recommended post-processing: final re-encode with explicit HDR metadata
 
@@ -263,6 +263,7 @@ Run these examples in PowerShell from the executable folder. Replace `input.mp4`
 |---|---|
 | `--assume-bt709` | Treat untagged SDR as BT.709 |
 | `--software-decode` | Explicitly select software instead of hardware decoding |
+| `--sdr-white-nits N` | Comparison SDR white (80..1000 nits). Omit to use the Windows primary display; fallback 203 |
 | `--cpu-color` | Use the CPU reference calculation instead of GPU color conversion for comparison |
 | `--diagnostics` | Save raw HDR effect comparisons and selected raw frame samples |
 | `--verify-full` | Decode the entire output to check frame count; adds processing time |

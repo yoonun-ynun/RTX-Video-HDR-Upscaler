@@ -13,8 +13,8 @@ internal static class GuiResumeTest {
             HdrWindow f=new HdrWindow(settings);f.Opacity=0;f.ShowInTaskbar=false;
             Timer timer=new Timer {Interval=20};DateTime deadline=DateTime.UtcNow.AddMinutes(3);
             f.Shown+=delegate {
-                if(restarting){f.Checkpoint.Checked=false;f.StartConversion(checkpoint);}
-                else {f.Comparison.Checked=compare;f.Input.Text=args[0];f.Output.Text=args[1];if(f.Gpu.Items.Count>1)f.Gpu.SelectedIndex=1;f.StartConversion();}
+                if(restarting){f.AutoSdrWhite.Checked=true;f.Checkpoint.Checked=false;f.StartConversion(checkpoint);}
+                else {f.AutoSdrWhite.Checked=false;f.SdrWhite.Value=360;f.Comparison.Checked=compare;f.Input.Text=args[0];f.Output.Text=args[1];if(f.Gpu.Items.Count>1)f.Gpu.SelectedIndex=1;f.StartConversion();}
                 timer.Start();
             };
             timer.Tick+=delegate {
@@ -23,7 +23,7 @@ internal static class GuiResumeTest {
                     if(!restarting) {
                         checkpoint=File.ReadAllText(Path.Combine(Path.GetDirectoryName(settings),"last-checkpoint.txt")).Trim();
                         passed=!f.Succeeded&&File.Exists(checkpoint)&&Directory.GetFiles(Path.GetDirectoryName(checkpoint),"gui-exit-*.json").Length>0;
-                    } else passed=passed&&f.Succeeded&&!f.Checkpoint.Checked&&!GuiSettings.Load(settings).Checkpoint&&f.Input.Text==args[0]&&f.Output.Text==args[1]&&f.Comparison.Checked==compare&&!f.preview.Checked;
+                    } else passed=passed&&f.Succeeded&&!f.Checkpoint.Checked&&!GuiSettings.Load(settings).Checkpoint&&f.Input.Text==args[0]&&f.Output.Text==args[1]&&f.Comparison.Checked==compare&&!f.preview.Checked&&(!compare || (f.SdrWhite.Value==360 && f.AutoSdrWhite.Checked && GuiSettings.Load(settings).SdrWhiteNits==0));
                     File.AppendAllText(args[1]+".test.txt", "attempt="+attempt+" passed="+passed+"\n"+f.Diagnostics+"\n");
                     timer.Stop();f.Close();
                 } else if(DateTime.UtcNow>deadline) {passed=false;timer.Stop();f.CancelConversion();f.Close();}

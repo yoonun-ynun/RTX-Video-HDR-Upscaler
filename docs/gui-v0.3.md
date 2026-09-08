@@ -93,10 +93,21 @@ Select **Compare SDR / HDR: left SDR · right HDR** to use an SDR reference on t
 
 The automatic filename is `source.compare.hdr.mkv` or `.mp4`. Toggling comparison preserves a manually chosen path. Choosing a new source resets the path beside that source with the comparison suffix. GPU selection, CQ/VBR, container/audio muxing, optional checkpoints and successful intermediate cleanup work as in normal conversion.
 
-The whole output is BT.2020/PQ. A separate GPU Video Processor keeps NVIDIA HDR disabled for the left reference; its SDR RGB is linearized, converted from BT.709 to BT.2020 primaries, then PQ encoded with white at 203 nits. The right HDR RGB is not transformed again. The SDR output format follows DXGI `RGB_FULL_G22_NONE_P709`'s [piecewise sRGB transfer definition](https://learn.microsoft.com/en-us/windows/win32/api/dxgicommon/ne-dxgicommon-dxgi_color_space_type). The 203-nit white is this application's fixed reference, not a reproduction of the Windows SDR brightness setting. Use an HDR display and player for comparison.
+The whole output is BT.2020/PQ. The left Video Processor disables HDR, then its SDR RGB is linearized, converted to BT.2020 and PQ encoded. The right HDR side is not transformed again. The transfer follows DXGI’s [piecewise sRGB definition](https://learn.microsoft.com/en-us/windows/win32/api/dxgicommon/ne-dxgicommon-dxgi_color_space_type). Since v0.4.4, SDR white comes from the Windows display or a manual value, replacing v0.4.3’s fixed 203-nit default.
 
 Both Video Processors use the same decoded frame and D3D11 device. Composition runs in the existing P010 GPU shader, adding no CPU frame round trip to the default GPU path. SDR reference processing still adds GPU work and VRAM use. The split is aligned to an even pixel to avoid mixing SDR and HDR in a 4:2:0 chroma block. For widths not divisible by four, the left side ends one pixel before the midpoint.
 
 Use `--compare-sdr-hdr` from the CLI; add `--max-frames 432` to limit duration and `--no-checkpoint` to disable saved segments. `--pipe-video` is supported. Raw RGB diagnostics (`--diagnostics`, `--cpu-color`) are incompatible with comparison. Checkpoint v2 stores comparison mode. Jobs created by an older build still require their original converter build to resume.
 
 `GpuComparisonTests.exe <GPU index>` checks 1918/1920 widths, 8/10-bit input, ramps/color bars, SDR reference correctness, HDR preservation and native-texture/pipe-buffer agreement. Default CTest includes checkpoint v2 round trips and legacy defaults. `tools/verify-gui.ps1` covers normal/full/preview comparison, MKV/MP4, cancellation and resume.
+
+
+## SDR brightness correction (v0.4.4)
+
+v0.4.3 fixed the comparison SDR white at 203 nits. On a Windows display showing SDR white at 480 nits, this makes the comparison SDR only about 42% as bright as the desktop SDR reference, resembling a dark overlay even without an alpha or range error.
+
+Default **Windows auto** reads the display containing the GUI on opening, after moving the window between displays, and when starting conversion. It does not change system settings. It reads [DISPLAYCONFIG_SDR_WHITE_LEVEL](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-displayconfig_sdr_white_level) through DisplayConfigGetDeviceInfo and converts it with `SDRWhiteLevel × 80 / 1000` nits. If no active HDR display value in 80..1000 nits is available, it uses 203 and labels the fallback in the GUI. Disable auto to edit **SDR nits**. In `settings.ini`, `sdr_white_nits=0` means auto; 80..1000 specifies a manual value.
+
+CLI defaults to the primary display; use `--sdr-white-nits 480` to override. `--sdr-white-level` (optionally followed by `"\\.\DISPLAY1"`) is a read-only diagnostic. A manual SDR white option without comparison is rejected. Checkpoint v3 stores the resolved nits and never re-detects it during resume. Older v2 comparison jobs retain their 203-nit meaning; resume still requires the original engine build.
+
+GPU validation covers 80/203/480/1000 nits, 8/10-bit inputs, ramps/color bars and two widths. Inverse PQ checks confirm that white reaches the selected luminance. Perceived matching on a particular display/player still requires playback confirmation.

@@ -4,7 +4,7 @@
 #include <cstring>
 
 // Independent double-precision reference, quantized to RGB10 before the existing CPU packer.
-static uint32_t Reference(uint32_t rgb) {
+static uint32_t Reference(uint32_t rgb,unsigned white=203) {
     double light[3];
     for(int c=0;c<3;c++) {
         double v=((rgb>>(c*10))&1023)/1023.0;
@@ -13,7 +13,7 @@ static uint32_t Reference(uint32_t rgb) {
     const double gamut[3][3]{{.627404,.329283,.043313},{.069097,.919540,.011362},{.016391,.088013,.895595}};
     uint32_t packed=3u<<30;
     for(int c=0;c<3;c++) {
-        double nits=203*(gamut[c][0]*light[0]+gamut[c][1]*light[1]+gamut[c][2]*light[2]);
+        double nits=white*(gamut[c][0]*light[0]+gamut[c][1]*light[1]+gamut[c][2]*light[2]);
         double power=std::pow(nits/10000,2610.0/16384);
         double pq=std::pow((3424.0/4096+2413.0/128*power)/(1+2392.0/128*power),2523.0/32);
         packed|=static_cast<uint32_t>(std::lround(pq*1023))<<(c*10);
@@ -27,11 +27,11 @@ int main(int argc,char** argv) {
         if(a==adapters.end())throw Failure(3,"NVIDIA GPU required");
         // Independent known PQ anchors: black=0, 203-nit white=0.58068888.
         if((Reference(0)&1023)!=0 || std::abs(int(Reference(0x3fffffff)&1023)-594)>1)throw Failure(5,"Reference white/black anchors failed");
-        for(unsigned w:{1918u,1920u}) for(bool input10:{false,true}) {
+        for(unsigned white:{80u,203u,480u,1000u}) for(unsigned w:{1918u,1920u}) for(bool input10:{false,true}) {
             constexpr unsigned h=1080;
             Pipeline off(*a,w,h,false,input10),on(*a,w,h,false,input10),split(*a,w,h,false,input10);
             off.CreateResources();off.SetHdr(false);on.CreateResources();on.SetHdr(true);
-            split.CreateResources();split.SetHdr(true);split.EnableComparison();
+            split.CreateResources();split.SetHdr(true);split.EnableComparison(white);
             unsigned frame=0;
             for(auto pattern:{"gray-ramp","color-bars"}) {
                 auto input=GeneratePattern(w,h,pattern);
@@ -46,9 +46,15 @@ int main(int argc,char** argv) {
                 for(unsigned y=0;y<h;y++)for(unsigned x=0;x<w;x++) {
                     size_t i=static_cast<size_t>(y)*w+x;
                     effect+=std::abs(int(hdr[i]&1023)-int(sdr[i]&1023));
-                    if(x<(w/4)*2) expectedRGB[i]=Reference(sdr[i]);
+                    if(x<(w/4)*2) expectedRGB[i]=Reference(sdr[i],white);
                 }
                 if(effect/(w*h)<5)throw Failure(5,"HDR effect disappeared while SDR reference was active");
+                if(std::string(pattern)=="color-bars") {
+                    double pq=((actual[static_cast<size_t>(h/2)*w+120]>>6)-64)/876.0;
+                    double v=std::pow(pq,32.0/2523);
+                    double measured=10000*std::pow(std::max(v-3424.0/4096,0.0)/(2413.0/128-2392.0/128*v),16384.0/2610);
+                    if(std::abs(measured-white)>white*.015)throw Failure(5,"SDR white luminance does not match the viewing reference");
+                }
                 auto expected=ToP010(expectedRGB,w,h);unsigned left=0,right=0;
                 for(unsigned y=0;y<h*3/2;y++)for(unsigned x=0;x<w;x++) {
                     size_t i=static_cast<size_t>(y)*w+x;
@@ -56,7 +62,7 @@ int main(int argc,char** argv) {
                     unsigned delta=static_cast<unsigned>(std::abs(int(actual[i]>>6)-int(expected[i]>>6)));
                     auto& worst=x<(w/4)*2?left:right;worst=std::max(worst,delta);
                 }
-                std::cout<<w<<" "<<(input10?10:8)<<"bit "<<pattern<<" SDR error="<<left<<" HDR error="<<right<<'\n';
+                std::cout<<white<<" nits "<<w<<" "<<(input10?10:8)<<"bit "<<pattern<<" SDR error="<<left<<" HDR error="<<right<<'\n';
                 if(left>2 || right>1)throw Failure(5,"Split differs from independent SDR/PQ or HDR reference");
                 D3D11_TEXTURE2D_DESC desc{};desc.Width=w;desc.Height=h;desc.MipLevels=desc.ArraySize=1;
                 desc.SampleDesc.Count=1;desc.Format=DXGI_FORMAT_P010;desc.BindFlags=D3D11_BIND_UNORDERED_ACCESS;

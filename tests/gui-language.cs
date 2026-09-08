@@ -45,11 +45,13 @@ internal static class GuiLanguageTest {
                     if(operation.StartsWith("write-")) {
                         f.Language.SelectedIndex=operation.EndsWith("ko")?1:0;
                         f.mode.SelectedIndex=1;f.FormatChoice.SelectedIndex=1;f.Checkpoint.Checked=false;
+                        f.AutoSdrWhite.Checked=false;f.SdrWhite.Value=360;
                         Require(GuiSettings.Load(path).Language==f.LanguageCode,"Language must save immediately");
                     } else if(operation.StartsWith("read-")) {
                         string expected=operation.EndsWith("ko")?"ko":"en";
                         Require(f.LanguageCode==expected && f.Text.Contains(expected=="ko"?"업스케일러":"Upscaler"),"Language must survive process restart");
                         Require(f.mode.SelectedIndex==1 && f.FormatChoice.SelectedIndex==1 && !f.Checkpoint.Checked,"Language persistence must preserve quality settings");
+                        Require(!f.AutoSdrWhite.Checked && f.SdrWhite.Value==360,"SDR brightness survives restart");
                     } else if(operation=="runtime") {
                         f.Language.SelectedIndex=0;CheckEnglish(f);
                         bool missing=(bool)typeof(HdrWindow).GetMethod("MissingRuntime",Private).Invoke(f,null);
@@ -67,6 +69,10 @@ internal static class GuiLanguageTest {
                         Require(f.Comparison.Enabled && !f.Comparison.Checked,"Comparison defaults off, available for full video");
                         f.preview.Checked=true;f.Comparison.Checked=true;
                         Require(f.Comparison.Enabled && f.Checkpoint.Enabled && f.Checkpoint.Checked,"Comparison supports checkpoints");
+                        f.AutoSdrWhite.Checked=true;
+                        Require(!f.SdrWhite.Enabled && GuiSettings.Load(path).SdrWhiteNits==0,"Auto white mode persists without baking display brightness into preferences");
+                        f.AutoSdrWhite.Checked=false;f.SdrWhite.Value=480;
+                        Require(f.SdrWhite.Enabled && GuiSettings.Load(path).SdrWhiteNits==480,"Manual SDR white remains editable and saved");
                         Require(f.Output.Text.EndsWith(".compare.hdr.mp4"),"Comparison default filename");
                         f.FormatChoice.SelectedIndex=0;Require(f.Output.Text.EndsWith(".compare.hdr.mkv"),"Comparison MKV name");
                         f.Language.SelectedIndex=1;Require(f.Output.Text.EndsWith(".compare.hdr.mkv") && f.Comparison.Checked,"Language preserves comparison");
@@ -98,6 +104,7 @@ internal static class GuiLanguageTest {
                                 f.Language.SelectedIndex=1;Require(f.Diagnostics.Contains("최근 5초"),"Live progress translated immediately");
                                 f.Language.SelectedIndex=0;
                                 Require(f.Running==pending && f.Output.Text==output && f.mode.SelectedIndex==1 && f.FormatChoice.SelectedIndex==1 && !f.Checkpoint.Checked,"Language switch must not mutate job or settings");
+                                Require(!f.SdrWhite.Enabled && !f.AutoSdrWhite.Enabled,"Brightness cannot change during conversion");
                                 Require(f.Language.Enabled && !f.Input.Enabled,"Language remains usable during conversion");
                                 foreach(string stage in new[]{"video_finalize","mux_aac","verify","finalize","cleanup"}) {
                                     Receive(f,"RTXHDR_STAGE "+stage);

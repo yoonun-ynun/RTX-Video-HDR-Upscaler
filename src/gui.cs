@@ -44,6 +44,9 @@ internal sealed class HdrWindow : Form
     bool activeCheckpoint, rememberedCheckpoint, cleanupWarning;
     internal readonly CheckBox preview = new CheckBox(), Comparison = new CheckBox();
     readonly CheckBox assume = new CheckBox();
+    internal readonly CheckBox AutoSdrWhite = new CheckBox();
+    internal readonly NumericUpDown SdrWhite = new NumericUpDown();
+    bool updatingSdrWhite;
     bool comparisonMode;
     bool Comparing { get { return Comparison.Checked; } }
     readonly Button resume = new Button();
@@ -123,7 +126,7 @@ internal sealed class HdrWindow : Form
         };
         FormatChoice.SelectedIndex=0;
         Shown += delegate {
-            LoadGpus();
+            LoadGpus();RefreshSdrWhite();
             int match=-1;
             for(int i=0;i<Gpu.Items.Count;i++) {
                 GpuChoice choice=(GpuChoice)Gpu.Items[i];
@@ -144,8 +147,17 @@ internal sealed class HdrWindow : Form
         Ui(assume,"색 정보가 없는 SDR을 BT.709로 간주"); assume.SetBounds(392, 145, 414, 25); settings.Controls.Add(assume);
 
         Ui(Comparison,"SDR/HDR 비교: 왼쪽 SDR · 오른쪽 HDR");
-        Comparison.SetBounds(118,180,440,25);settings.Controls.Add(Comparison);
-        AddLabel(settings,"전체/시험 변환 · SDR 흰색 203 nits",558,181,268);
+        Comparison.SetBounds(118,180,365,25);settings.Controls.Add(Comparison);
+        AddLabel(settings,"SDR nits",485,181,85);
+        SdrWhite.Minimum=80;SdrWhite.Maximum=1000;SdrWhite.Value=203;
+        SdrWhite.SetBounds(568,178,90,30);settings.Controls.Add(SdrWhite);
+        Ui(AutoSdrWhite,"Windows 자동");AutoSdrWhite.SetBounds(678,180,148,25);settings.Controls.Add(AutoSdrWhite);
+        AutoSdrWhite.Checked=savedSettings.SdrWhiteNits==0;
+        if(!AutoSdrWhite.Checked)SdrWhite.Value=savedSettings.SdrWhiteNits;
+        AutoSdrWhite.CheckedChanged+=delegate {if(AutoSdrWhite.Checked)RefreshSdrWhite();UpdateWhiteControls();SaveSettings();};
+        SdrWhite.ValueChanged+=delegate {if(!updatingSdrWhite)SaveSettings();};
+        UpdateWhiteControls();
+        ResizeEnd+=delegate {if(AutoSdrWhite.Checked && Running==null)RefreshSdrWhite();};
         Comparison.CheckedChanged+=delegate {UpdateComparison();};
 
         Ui(Checkpoint,"새 변환에서 구간 저장 (재개 지원)");
@@ -209,13 +221,38 @@ internal sealed class HdrWindow : Form
         }
         comparisonMode=next;
         Comparison.Enabled=Running==null;
+        UpdateWhiteControls();
         UpdateCheckpointHint();
     }
     void UpdateCheckpointHint() {
         Ui(checkpointHint,Checkpoint.Checked?"영상 약 10초마다 저장 · 추가 처리 비용":"속도 우선 · 중단한 작업은 재개 불가");
     }
+    void UpdateWhiteControls() {
+        AutoSdrWhite.Enabled=Running==null && Comparing;
+        SdrWhite.Enabled=Running==null && Comparing && !AutoSdrWhite.Checked;
+    }
+    void RefreshSdrWhite() {
+        if(!AutoSdrWhite.Checked || Running!=null || MissingRuntime())return;
+        decimal nits=203;bool detected=false;
+        try {
+            string display=Screen.FromControl(this).DeviceName;
+            using(var p=new Process {StartInfo=new ProcessStartInfo(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"RTXVideoHDRConvert.exe"),"--sdr-white-level "+Quote(display)) {
+                UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,
+                StandardOutputEncoding=Encoding.UTF8,StandardErrorEncoding=Encoding.UTF8
+            }}) {
+                p.Start();string text=p.StandardOutput.ReadToEnd();p.StandardError.ReadToEnd();p.WaitForExit();
+                string[] fields=text.Trim().Split('\t');decimal value;
+                if(p.ExitCode==0 && fields.Length>=2 && Decimal.TryParse(fields[0],NumberStyles.None,CultureInfo.InvariantCulture,out value) && value>=80 && value<=1000) {
+                    nits=value;detected=fields[1]=="1";
+                }
+            }
+        } catch(Exception) { /* UI remains usable if the engine/runtime/display is unavailable. */ }
+        updatingSdrWhite=true;try {SdrWhite.Value=nits;}finally {updatingSdrWhite=false;}
+        Ui(AutoSdrWhite,detected?"Windows 자동":"자동 (203 기본)");
+    }
     void SaveSettings() {
         if(restoringSettings || applyingLanguage) return;
+        savedSettings.SdrWhiteNits=AutoSdrWhite.Checked?0:(int)SdrWhite.Value;
         savedSettings.Language=language;
         savedSettings.Checkpoint=Checkpoint.Checked;
         savedSettings.Mode=mode.SelectedIndex;savedSettings.Cq=cq.Value;
@@ -333,7 +370,10 @@ internal sealed class HdrWindow : Form
             arguments += mode.SelectedIndex==0 ? " --cq "+cq.Value.ToString(CultureInfo.InvariantCulture) : " --bitrate "+bitrate.Value.ToString(CultureInfo.InvariantCulture)+"M";
             if(preview.Checked) arguments+=" --max-frames 432";
             if(assume.Checked) arguments+=" --assume-bt709";
-            if(Comparing) arguments+=" --compare-sdr-hdr";
+            if(Comparing) {
+                RefreshSdrWhite();
+                arguments+=" --compare-sdr-hdr --sdr-white-nits "+SdrWhite.Value.ToString(CultureInfo.InvariantCulture);
+            }
             if(!Checkpoint.Checked) arguments+=" --no-checkpoint";
             }
             Process p = new Process { StartInfo=new ProcessStartInfo(engine,arguments) {
@@ -368,11 +408,15 @@ internal sealed class HdrWindow : Form
         if(line.StartsWith("RTXHDR_OUTPUT ")) {completedOutput=line.Substring(14).Trim();FormatChoice.SelectedIndex=completedOutput.EndsWith(".mp4",StringComparison.OrdinalIgnoreCase)?1:0;Output.Text=completedOutput;return;}
         if(line.StartsWith("RTXHDR_JOB_SETTINGS ")) {
             string[] fields=line.Substring(20).Split(' ');int index,quality,maximum;decimal bits;
-            if((fields.Length==5||fields.Length==6)&&Int32.TryParse(fields[0],out index)&&Int32.TryParse(fields[1],out quality)&&Decimal.TryParse(fields[2],NumberStyles.None,CultureInfo.InvariantCulture,out bits)&&Int32.TryParse(fields[4],out maximum)) {
+            if((fields.Length>=5&&fields.Length<=7)&&Int32.TryParse(fields[0],out index)&&Int32.TryParse(fields[1],out quality)&&Decimal.TryParse(fields[2],NumberStyles.None,CultureInfo.InvariantCulture,out bits)&&Int32.TryParse(fields[4],out maximum)) {
                 for(int i=0;i<Gpu.Items.Count;i++)if(((GpuChoice)Gpu.Items[i]).Index==index)Gpu.SelectedIndex=i;
                 cq.Value=Math.Max(cq.Minimum,Math.Min(cq.Maximum,quality));
                 mode.SelectedIndex=bits>0?1:0;if(bits>0)bitrate.Value=Math.Max(bitrate.Minimum,Math.Min(bitrate.Maximum,bits/1000000));
-                assume.Checked=fields[3]=="1";preview.Checked=maximum>0;Comparison.Checked=fields.Length==6 && fields[5]=="1";
+                assume.Checked=fields[3]=="1";preview.Checked=maximum>0;Comparison.Checked=fields.Length>=6 && fields[5]=="1";
+                int white;
+                if(fields.Length==7 && Int32.TryParse(fields[6],out white) && white>=80 && white<=1000) {
+                    updatingSdrWhite=true;try {SdrWhite.Value=white;}finally {updatingSdrWhite=false;}
+                }
             }
             return;
         }
@@ -470,7 +514,7 @@ internal sealed class HdrWindow : Form
             string directory=Directory.Exists(logDirectory)?logDirectory:Path.GetDirectoryName(settingsPath);
             long free=-1;try {free=new DriveInfo(Path.GetPathRoot(directory)).AvailableFreeSpace;}catch(IOException){}
             string path=Path.Combine(directory,"gui-exit-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N")+".json");
-            File.WriteAllText(path,"{\"version\":\"0.4.3\",\"language\":"+Json(language)+",\"cancelled\":"+(cancelled?"true":"false")+",\"exit_code\":"+code+",\"stage\":"+processingStage+",\"last_progress\":"+Json(LastProgress)+",\"available_disk_bytes\":"+free+",\"command\":"+Json(Running.StartInfo.Arguments)+",\"log\":"+Json(log.Text)+"}",new UTF8Encoding(false));
+            File.WriteAllText(path,"{\"version\":\"0.4.4\",\"language\":"+Json(language)+",\"cancelled\":"+(cancelled?"true":"false")+",\"exit_code\":"+code+",\"stage\":"+processingStage+",\"last_progress\":"+Json(LastProgress)+",\"available_disk_bytes\":"+free+",\"command\":"+Json(Running.StartInfo.Arguments)+",\"log\":"+Json(log.Text)+"}",new UTF8Encoding(false));
         }catch(Exception e){log.AppendText(T("종료 진단 저장 실패: {0}",e.Message)+Environment.NewLine);}
     }
     internal void CancelConversion() {
@@ -495,7 +539,9 @@ internal static class GuiText {
     // Korean source keys and English translations share formatting arguments.
     internal static readonly Dictionary<string,string> English = new Dictionary<string,string> {
         {"SDR/HDR 비교: 왼쪽 SDR · 오른쪽 HDR","Compare SDR / HDR: left SDR · right HDR"},
-        {"전체/시험 변환 · SDR 흰색 203 nits","Full / preview · SDR white 203 nits"},
+        {"SDR nits","SDR nits"},
+        {"Windows 자동","Windows auto"},
+        {"자동 (203 기본)","Auto (203 fallback)"},
         {"RTX Video HDR 업스케일러 · SDR → HDR","RTX Video HDR Upscaler · SDR → HDR"},
         {"RTX Video HDR 업스케일러","RTX Video HDR Upscaler"},
         {"NVIDIA RTX Video HDR로 SDR 영상을 HDR로 업스케일링합니다.","Upscale SDR video to HDR with NVIDIA RTX Video HDR."},
@@ -593,7 +639,7 @@ internal static class GuiText {
     }
 }
 internal sealed class GuiSettings {
-    internal int Mode=0, Format=0, GpuIndex=0;
+    internal int Mode=0, Format=0, GpuIndex=0, SdrWhiteNits=0;
     internal decimal Cq=18, Bitrate=40;
     internal string GpuName="";
     internal string Language=DefaultLanguage;
@@ -614,6 +660,7 @@ internal sealed class GuiSettings {
         if(values.TryGetValue("container",out value) && value=="mp4") settings.Format=1;
         if(values.TryGetValue("cq",out value) && Decimal.TryParse(value,NumberStyles.Number,CultureInfo.InvariantCulture,out number) && number>=0 && number<=51 && number==Decimal.Truncate(number)) settings.Cq=number;
         if(values.TryGetValue("bitrate_mbps",out value) && Decimal.TryParse(value,NumberStyles.Number,CultureInfo.InvariantCulture,out number) && number>=1 && number<=1000) settings.Bitrate=Decimal.Round(number,1);
+        if(values.TryGetValue("sdr_white_nits",out value) && Int32.TryParse(value,out index) && (index==0 || (index>=80 && index<=1000)))settings.SdrWhiteNits=index;
         if(values.TryGetValue("gpu_index",out value) && Int32.TryParse(value,out index) && index>=0) settings.GpuIndex=index;
         if(values.TryGetValue("gpu_name",out value)) settings.GpuName=value;
         return settings;
@@ -624,6 +671,7 @@ internal sealed class GuiSettings {
             +"\r\nbitrate_mbps="+Bitrate.ToString(CultureInfo.InvariantCulture)
             +"\r\ncontainer="+(Format==1?"mp4":"mkv")
             +"\r\ncheckpoint="+(Checkpoint?"true":"false")
+            +"\r\nsdr_white_nits="+SdrWhiteNits.ToString(CultureInfo.InvariantCulture)
             +"\r\ngpu_index="+GpuIndex.ToString(CultureInfo.InvariantCulture)
             +"\r\ngpu_name="+GpuName.Replace("\r","").Replace("\n","")+"\r\n";
         string temporary=path+"."+Guid.NewGuid().ToString("N")+".tmp";

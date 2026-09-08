@@ -93,10 +93,21 @@ RTXVideoHDRConvert.exe "input.mp4" --adapter 1 --output "output.mp4" --bitrate 4
 
 자동 저장 이름은 `원본.compare.hdr.mkv` 또는 `.mp4`입니다. 직접 지정한 경로는 비교 옵션을 바꿔도 유지합니다. 새 입력을 선택하면 새 원본 옆의 비교 파일명으로 다시 설정됩니다. GPU, CQ/VBR, 컨테이너, 오디오 muxing, 구간 저장 선택과 성공 후 중간 파일 정리는 일반 변환과 같이 사용할 수 있습니다.
 
-전체 출력은 BT.2020/PQ입니다. 왼쪽용 GPU Video Processor는 NVIDIA HDR 확장을 끈 상태로 유지하고, 그 SDR RGB를 선형화 → BT.709에서 BT.2020 색역 변환 → 흰색 203 nits 기준 PQ 인코딩합니다. 오른쪽의 HDR RGB에는 이 변환을 다시 적용하지 않습니다. SDR 출력 형식인 DXGI `RGB_FULL_G22_NONE_P709`의 [sRGB 전달 함수 정의](https://learn.microsoft.com/en-us/windows/win32/api/dxgicommon/ne-dxgicommon-dxgi_color_space_type)를 따릅니다. 203 nits는 이 프로그램이 정한 고정 SDR 기준이며, Windows SDR 밝기 설정을 복제하지 않습니다. HDR 지원 디스플레이와 플레이어에서 비교하세요.
+전체 출력은 BT.2020/PQ입니다. 왼쪽용 Video Processor는 HDR 확장을 끄고 SDR RGB를 선형화 → BT.2020 색역 변환 → PQ 인코딩합니다. 오른쪽에는 이 변환을 다시 적용하지 않습니다. 전달 함수는 DXGI의 [sRGB 정의](https://learn.microsoft.com/en-us/windows/win32/api/dxgicommon/ne-dxgicommon-dxgi_color_space_type)를 따릅니다. v0.4.4부터 SDR 흰색은 Windows 화면 기준 또는 수동 값으로 결정하며, v0.4.3의 고정 203 nits를 기본으로 강제하지 않습니다.
 
 두 Video Processor는 같은 디코딩 프레임과 D3D11 장치를 사용하며, 합성은 기존 P010 GPU 셰이더에서 처리합니다. 기본 GPU 경로에 CPU 프레임 왕복을 추가하지 않지만, SDR 기준 처리 때문에 속도·VRAM 비용은 늘 수 있습니다. 색차 4:2:0 경계가 섞이지 않도록 분할 위치를 짝수 픽셀에 맞춥니다. 너비가 4의 배수가 아니면 왼쪽이 중앙보다 한 픽셀 좁습니다.
 
 CLI는 `--compare-sdr-hdr`이며 길이를 제한하려면 `--max-frames 432`를 추가합니다. `--no-checkpoint`로 구간 저장을 끌 수 있습니다. `--pipe-video`도 지원하지만, RGB 원시 진단인 `--diagnostics`와 `--cpu-color`는 비교 모드와 함께 사용할 수 없습니다. 체크포인트 v2에는 비교 설정을 포함하며, 이전 버전 작업은 작업을 만든 원래 프로그램 빌드로 재개해야 합니다.
 
 `GpuComparisonTests.exe <GPU 번호>`는 1918/1920 너비, 8/10비트, 회색 계조/색 막대에서 SDR 기준과 HDR 보존, 네이티브 텍스처와 파이프 버퍼의 일치를 검사합니다. 기본 CTest에는 체크포인트 v2 왕복과 이전 형식 기본값 검증을 포함합니다. `tools/verify-gui.ps1`은 일반 변환과 전체/시험 비교, MKV/MP4, 취소 및 재개를 검사합니다.
+
+
+## SDR 밝기 기준 수정 (v0.4.4)
+
+v0.4.3은 비교 SDR을 203 nits로 고정했습니다. 예를 들어 Windows에서 SDR 흰색이 480 nits이면 비교 영상의 SDR은 원래 화면 SDR 밝기의 약 42%로 표시됩니다. 코드의 레벨 범위나 알파 문제와 별개로 검은 필터처럼 보일 수 있었던 이유입니다.
+
+기본 **Windows 자동**은 GUI가 있는 디스플레이의 SDR 흰색을 창을 열 때, 다른 화면으로 옮긴 뒤, 변환 시작 시 읽습니다. 시스템 설정을 바꾸지는 않습니다. [DisplayConfigGetDeviceInfo / DISPLAYCONFIG_SDR_WHITE_LEVEL](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-displayconfig_sdr_white_level) 값을 `SDRWhiteLevel × 80 / 1000` nits로 환산합니다. 활성 HDR 화면에서 80~1000 nits를 읽지 못하면 203으로 대체하고 GUI에 기본값 사용을 표시합니다. 자동을 끄면 **SDR nits**에서 직접 조절할 수 있습니다. `settings.ini`의 `sdr_white_nits=0`은 자동, 80~1000은 수동 값입니다.
+
+CLI는 기본 주 화면을 읽으며 `--sdr-white-nits 480`처럼 지정할 수도 있습니다. `--sdr-white-level` 또는 `--sdr-white-level "\\.\DISPLAY1"`은 읽기 전용 진단입니다. 비교 외 모드에 수동 밝기를 지정하면 오류로 거부합니다. 체크포인트 v3에는 실제 적용한 nits를 저장하고 재개할 때 재감지하지 않습니다. 이전 v2의 비교 설정은 203 nits로 해석하되, 작업 재개에는 여전히 원래 엔진 빌드가 필요합니다.
+
+GPU 검증은 80/203/480/1000 nits에서 8/10비트, 회색/색 막대, 두 가지 너비를 검사하며, 출력 PQ를 역변환해서 흰색이 지정한 휘도에 도달하는지도 확인합니다. 사용자 화면/플레이어의 시각적 일치 여부는 별도 재생 확인이 필요합니다.

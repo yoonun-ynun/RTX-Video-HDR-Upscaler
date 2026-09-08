@@ -86,3 +86,17 @@ RTXVideoHDRConvert.exe "input.mp4" --adapter 1 --output "output.mp4" --bitrate 4
 프로그램의 제목·버튼·진행 단계·입력 오류·파일 선택창 제목을 번역합니다. 기존 로그와 엔진·FFmpeg 원문 진단은 기록된 대로 보존하며, Windows 자체 대화상자 버튼은 Windows 언어를 따릅니다.
 
 두 언어의 화면, 진행·muxing·정리 단계 중 전환, 경로·설정 보존, 입력 오류 번역, 별도 프로세스 재실행 후 언어 복원, 기본값·기존 설정 호환성, 150% DPI 배치를 검증합니다. `tools/verify-gui-language.ps1 -BuildDirectory <빌드폴더>`로 재현합니다. 실제 변환 시험은 `tools/verify-gui.ps1 -BuildDirectory <빌드폴더> -Language en` 또는 `-Language ko`를 사용합니다.
+
+## SDR/HDR 좌우 비교 (v0.4.3)
+
+**SDR/HDR 비교: 왼쪽 SDR · 오른쪽 HDR**을 선택하면 매 프레임의 왼쪽 절반에 SDR 기준, 오른쪽 절반에 RTX HDR을 넣습니다. 두 영상을 축소해서 나란히 배치하는 방식이 아니며 원래 구도를 유지합니다. **시험 변환: 첫 432프레임**을 끄면 전체 영상, 켜면 첫 432프레임까지만 처리합니다. 짧은 입력은 끝까지 처리합니다. 비교 옵션은 실행마다 기본 꺼짐이며, 구간 저장을 사용한 작업을 재개할 때에는 체크포인트에 저장한 비교 모드를 복원합니다.
+
+자동 저장 이름은 `원본.compare.hdr.mkv` 또는 `.mp4`입니다. 직접 지정한 경로는 비교 옵션을 바꿔도 유지합니다. 새 입력을 선택하면 새 원본 옆의 비교 파일명으로 다시 설정됩니다. GPU, CQ/VBR, 컨테이너, 오디오 muxing, 구간 저장 선택과 성공 후 중간 파일 정리는 일반 변환과 같이 사용할 수 있습니다.
+
+전체 출력은 BT.2020/PQ입니다. 왼쪽용 GPU Video Processor는 NVIDIA HDR 확장을 끈 상태로 유지하고, 그 SDR RGB를 선형화 → BT.709에서 BT.2020 색역 변환 → 흰색 203 nits 기준 PQ 인코딩합니다. 오른쪽의 HDR RGB에는 이 변환을 다시 적용하지 않습니다. SDR 출력 형식인 DXGI `RGB_FULL_G22_NONE_P709`의 [sRGB 전달 함수 정의](https://learn.microsoft.com/en-us/windows/win32/api/dxgicommon/ne-dxgicommon-dxgi_color_space_type)를 따릅니다. 203 nits는 이 프로그램이 정한 고정 SDR 기준이며, Windows SDR 밝기 설정을 복제하지 않습니다. HDR 지원 디스플레이와 플레이어에서 비교하세요.
+
+두 Video Processor는 같은 디코딩 프레임과 D3D11 장치를 사용하며, 합성은 기존 P010 GPU 셰이더에서 처리합니다. 기본 GPU 경로에 CPU 프레임 왕복을 추가하지 않지만, SDR 기준 처리 때문에 속도·VRAM 비용은 늘 수 있습니다. 색차 4:2:0 경계가 섞이지 않도록 분할 위치를 짝수 픽셀에 맞춥니다. 너비가 4의 배수가 아니면 왼쪽이 중앙보다 한 픽셀 좁습니다.
+
+CLI는 `--compare-sdr-hdr`이며 길이를 제한하려면 `--max-frames 432`를 추가합니다. `--no-checkpoint`로 구간 저장을 끌 수 있습니다. `--pipe-video`도 지원하지만, RGB 원시 진단인 `--diagnostics`와 `--cpu-color`는 비교 모드와 함께 사용할 수 없습니다. 체크포인트 v2에는 비교 설정을 포함하며, 이전 버전 작업은 작업을 만든 원래 프로그램 빌드로 재개해야 합니다.
+
+`GpuComparisonTests.exe <GPU 번호>`는 1918/1920 너비, 8/10비트, 회색 계조/색 막대에서 SDR 기준과 HDR 보존, 네이티브 텍스처와 파이프 버퍼의 일치를 검사합니다. 기본 CTest에는 체크포인트 v2 왕복과 이전 형식 기본값 검증을 포함합니다. `tools/verify-gui.ps1`은 일반 변환과 전체/시험 비교, MKV/MP4, 취소 및 재개를 검사합니다.

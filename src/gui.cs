@@ -42,7 +42,10 @@ internal sealed class HdrWindow : Form
     internal readonly CheckBox Checkpoint = new CheckBox();
     readonly Label checkpointHint = new Label();
     bool activeCheckpoint, rememberedCheckpoint, cleanupWarning;
-    readonly CheckBox preview = new CheckBox(), assume = new CheckBox();
+    internal readonly CheckBox preview = new CheckBox(), Comparison = new CheckBox();
+    readonly CheckBox assume = new CheckBox();
+    bool comparisonMode;
+    bool Comparing { get { return Comparison.Checked; } }
     readonly Button resume = new Button();
     readonly Button start = new Button(), cancel = new Button(), play = new Button(), folder = new Button();
     readonly Button chooseInput = new Button(), chooseOutput = new Button();
@@ -74,7 +77,7 @@ internal sealed class HdrWindow : Form
         Ui(this,"RTX Video HDR 업스케일러 · SDR → HDR");
         Font = new Font("맑은 고딕", 10F);
         AutoScaleMode = AutoScaleMode.None;
-        ClientSize = new Size(900, 786); MinimumSize = new Size(916, 825);
+        ClientSize = new Size(900, 822); MinimumSize = new Size(916, 861);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(245, 246, 250); ForeColor = ink;
         AllowDrop = true;
@@ -95,15 +98,9 @@ internal sealed class HdrWindow : Form
         SetupText(Output, files, 118, 74, 595);
         SetupButton(chooseOutput, files, "변경", 724, 72, 102, delegate { PickOutput(); });
         AddLabel(files, "영상을 바꾸면 새 원본 옆의 HDR 파일명으로 저장 위치가 자동 변경됩니다.", 118, 119, 700);
-        Input.TextChanged += delegate {
-            try {
-                string input = Clean(Input.Text);
-                string next = String.IsNullOrWhiteSpace(input) ? "" : Path.Combine(Path.GetDirectoryName(input) ?? "", Path.GetFileNameWithoutExtension(input) + (FormatChoice.SelectedIndex==1?".hdr.mp4":".hdr.mkv"));
-                Output.Text = next;
-            } catch(ArgumentException) { Output.Clear(); } catch(PathTooLongException) { Output.Clear(); }
-        };
+        Input.TextChanged += delegate { SetDefaultOutput(); };
 
-        GroupBox settings = Group("02   출력 품질 · 재개 설정", 28, 280, 844, 218);
+        GroupBox settings = Group("02   출력 품질 · 재개 설정", 28, 280, 844, 254);
         AddLabel(settings, "인코딩 방식", 18, 34, 95);
         mode.DropDownStyle = ComboBoxStyle.DropDownList;
         mode.Items.AddRange(new object[] { T("품질 기준 (CQ)"), T("평균 비트레이트 (VBR)") });
@@ -146,22 +143,27 @@ internal sealed class HdrWindow : Form
         Ui(preview,"시험 변환: 첫 432프레임"); preview.SetBounds(118, 145, 258, 25); settings.Controls.Add(preview);
         Ui(assume,"색 정보가 없는 SDR을 BT.709로 간주"); assume.SetBounds(392, 145, 414, 25); settings.Controls.Add(assume);
 
-        Ui(Checkpoint,"새 변환에서 구간 저장 (재개 지원)");
-        Checkpoint.SetBounds(118, 180, 335, 25);settings.Controls.Add(Checkpoint);
-        checkpointHint.SetBounds(460, 181, 366, 25);settings.Controls.Add(checkpointHint);
+        Ui(Comparison,"SDR/HDR 비교: 왼쪽 SDR · 오른쪽 HDR");
+        Comparison.SetBounds(118,180,440,25);settings.Controls.Add(Comparison);
+        AddLabel(settings,"전체/시험 변환 · SDR 흰색 203 nits",558,181,268);
+        Comparison.CheckedChanged+=delegate {UpdateComparison();};
 
-        SetupButton(start, this, "HDR 업스케일링 시작", 28, 515, 198, delegate { StartConversion(); });
+        Ui(Checkpoint,"새 변환에서 구간 저장 (재개 지원)");
+        Checkpoint.SetBounds(118, 216, 335, 25);settings.Controls.Add(Checkpoint);
+        checkpointHint.SetBounds(460, 217, 366, 25);settings.Controls.Add(checkpointHint);
+
+        SetupButton(start, this, "HDR 업스케일링 시작", 28, 551, 198, delegate { StartConversion(); });
         start.BackColor = accent; start.ForeColor = Color.White; start.FlatStyle = FlatStyle.Flat; start.FlatAppearance.BorderSize = 0;
-        SetupButton(cancel, this, "취소", 238, 515, 95, delegate { CancelConversion(); }); cancel.Enabled = false;
-        SetupButton(resume, this, "이어서 변환", 346, 515, 165, delegate { PickResume(); });
-        SetupButton(play, this, "결과 재생", 646, 515, 108, delegate { OpenPath(completedOutput); }); play.Enabled = false;
-        SetupButton(folder, this, "저장 폴더", 766, 515, 106, delegate { OpenPath(Path.GetDirectoryName(completedOutput)); }); folder.Enabled = false;
+        SetupButton(cancel, this, "취소", 238, 551, 95, delegate { CancelConversion(); }); cancel.Enabled = false;
+        SetupButton(resume, this, "이어서 변환", 346, 551, 165, delegate { PickResume(); });
+        SetupButton(play, this, "결과 재생", 646, 551, 108, delegate { OpenPath(completedOutput); }); play.Enabled = false;
+        SetupButton(folder, this, "저장 폴더", 766, 551, 106, delegate { OpenPath(Path.GetDirectoryName(completedOutput)); }); folder.Enabled = false;
         play.Anchor = folder.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        Status.SetBounds(28, 565, 844, 26); Ui(Status,"변환할 영상을 선택하세요"); Status.Font = new Font(Font, FontStyle.Bold); Controls.Add(Status);
-        progress.SetBounds(28, 601, 844, 10); progress.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        Status.SetBounds(28, 601, 844, 26); Ui(Status,"변환할 영상을 선택하세요"); Status.Font = new Font(Font, FontStyle.Bold); Controls.Add(Status);
+        progress.SetBounds(28, 637, 844, 10); progress.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         progress.Maximum = 1000; Controls.Add(progress);
-        detail.SetBounds(28, 624, 844, 25); Ui(detail,"하드웨어 디코딩과 GPU 색 변환을 사용합니다."); Controls.Add(detail);
-        log.SetBounds(28, 661, 844, 97); log.Multiline = true; log.ReadOnly = true; log.ScrollBars = ScrollBars.Vertical;
+        detail.SetBounds(28, 660, 844, 25); Ui(detail,"하드웨어 디코딩과 GPU 색 변환을 사용합니다."); Controls.Add(detail);
+        log.SetBounds(28, 697, 844, 97); log.Multiline = true; log.ReadOnly = true; log.ScrollBars = ScrollBars.Vertical;
         log.BackColor = Color.White; log.Font = new Font("Consolas", 9F); log.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         Controls.Add(log);
         DragEnter += delegate(object sender, DragEventArgs e) { e.Effect = Running == null && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None; };
@@ -189,6 +191,25 @@ internal sealed class HdrWindow : Form
             float scale=g.DpiX/96F;
             if(scale!=1F) Scale(new SizeF(scale,scale));
         }
+    }
+    string DefaultOutput(bool compare) {
+        string input=Clean(Input.Text);
+        return String.IsNullOrWhiteSpace(input)?"":Path.Combine(Path.GetDirectoryName(input)??"",
+            Path.GetFileNameWithoutExtension(input)+(compare?".compare.hdr":".hdr")+(FormatChoice.SelectedIndex==1?".mp4":".mkv"));
+    }
+    void SetDefaultOutput() {
+        try {Output.Text=DefaultOutput(Comparing);}
+        catch(ArgumentException) {Output.Clear();} catch(PathTooLongException) {Output.Clear();}
+    }
+    void UpdateComparison() {
+        bool next=Comparing;
+        if(next!=comparisonMode && Running==null) {
+            try {if(String.Equals(Clean(Output.Text),DefaultOutput(comparisonMode),StringComparison.OrdinalIgnoreCase)) Output.Text=DefaultOutput(next);}
+            catch(ArgumentException) {} catch(PathTooLongException) {}
+        }
+        comparisonMode=next;
+        Comparison.Enabled=Running==null;
+        UpdateCheckpointHint();
     }
     void UpdateCheckpointHint() {
         Ui(checkpointHint,Checkpoint.Checked?"영상 약 10초마다 저장 · 추가 처리 비용":"속도 우선 · 중단한 작업은 재개 불가");
@@ -273,6 +294,7 @@ internal sealed class HdrWindow : Form
         foreach(Control c in new Control[] {Input,Output,chooseInput,chooseOutput,mode,Gpu,FormatChoice,preview,assume,Checkpoint,start}) c.Enabled=!busy;
         cq.Enabled=!busy && mode.SelectedIndex==0; bitrate.Enabled=!busy && mode.SelectedIndex==1;
         resume.Enabled=!busy;cancel.Enabled=busy; play.Enabled=folder.Enabled=!busy && Succeeded;
+        UpdateComparison();
         UseWaitCursor=false;
     }
     void PickResume() {
@@ -297,6 +319,7 @@ internal sealed class HdrWindow : Form
             string output="",arguments="";
             if(checkpoint!=null) {
                 if(!File.Exists(checkpoint))throw new GuiError("체크포인트를 찾을 수 없습니다.");
+                Comparison.Checked=false;
                 arguments="--resume "+Quote(Path.GetFullPath(checkpoint));
             } else {
             string input=Path.GetFullPath(Clean(Input.Text));output=Path.GetFullPath(Clean(Output.Text));
@@ -310,6 +333,7 @@ internal sealed class HdrWindow : Form
             arguments += mode.SelectedIndex==0 ? " --cq "+cq.Value.ToString(CultureInfo.InvariantCulture) : " --bitrate "+bitrate.Value.ToString(CultureInfo.InvariantCulture)+"M";
             if(preview.Checked) arguments+=" --max-frames 432";
             if(assume.Checked) arguments+=" --assume-bt709";
+            if(Comparing) arguments+=" --compare-sdr-hdr";
             if(!Checkpoint.Checked) arguments+=" --no-checkpoint";
             }
             Process p = new Process { StartInfo=new ProcessStartInfo(engine,arguments) {
@@ -344,11 +368,11 @@ internal sealed class HdrWindow : Form
         if(line.StartsWith("RTXHDR_OUTPUT ")) {completedOutput=line.Substring(14).Trim();FormatChoice.SelectedIndex=completedOutput.EndsWith(".mp4",StringComparison.OrdinalIgnoreCase)?1:0;Output.Text=completedOutput;return;}
         if(line.StartsWith("RTXHDR_JOB_SETTINGS ")) {
             string[] fields=line.Substring(20).Split(' ');int index,quality,maximum;decimal bits;
-            if(fields.Length==5&&Int32.TryParse(fields[0],out index)&&Int32.TryParse(fields[1],out quality)&&Decimal.TryParse(fields[2],NumberStyles.None,CultureInfo.InvariantCulture,out bits)&&Int32.TryParse(fields[4],out maximum)) {
+            if((fields.Length==5||fields.Length==6)&&Int32.TryParse(fields[0],out index)&&Int32.TryParse(fields[1],out quality)&&Decimal.TryParse(fields[2],NumberStyles.None,CultureInfo.InvariantCulture,out bits)&&Int32.TryParse(fields[4],out maximum)) {
                 for(int i=0;i<Gpu.Items.Count;i++)if(((GpuChoice)Gpu.Items[i]).Index==index)Gpu.SelectedIndex=i;
                 cq.Value=Math.Max(cq.Minimum,Math.Min(cq.Maximum,quality));
                 mode.SelectedIndex=bits>0?1:0;if(bits>0)bitrate.Value=Math.Max(bitrate.Minimum,Math.Min(bitrate.Maximum,bits/1000000));
-                assume.Checked=fields[3]=="1";preview.Checked=maximum>0;
+                assume.Checked=fields[3]=="1";preview.Checked=maximum>0;Comparison.Checked=fields.Length==6 && fields[5]=="1";
             }
             return;
         }
@@ -446,7 +470,7 @@ internal sealed class HdrWindow : Form
             string directory=Directory.Exists(logDirectory)?logDirectory:Path.GetDirectoryName(settingsPath);
             long free=-1;try {free=new DriveInfo(Path.GetPathRoot(directory)).AvailableFreeSpace;}catch(IOException){}
             string path=Path.Combine(directory,"gui-exit-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N")+".json");
-            File.WriteAllText(path,"{\"version\":\"0.4.2\",\"language\":"+Json(language)+",\"cancelled\":"+(cancelled?"true":"false")+",\"exit_code\":"+code+",\"stage\":"+processingStage+",\"last_progress\":"+Json(LastProgress)+",\"available_disk_bytes\":"+free+",\"command\":"+Json(Running.StartInfo.Arguments)+",\"log\":"+Json(log.Text)+"}",new UTF8Encoding(false));
+            File.WriteAllText(path,"{\"version\":\"0.4.3\",\"language\":"+Json(language)+",\"cancelled\":"+(cancelled?"true":"false")+",\"exit_code\":"+code+",\"stage\":"+processingStage+",\"last_progress\":"+Json(LastProgress)+",\"available_disk_bytes\":"+free+",\"command\":"+Json(Running.StartInfo.Arguments)+",\"log\":"+Json(log.Text)+"}",new UTF8Encoding(false));
         }catch(Exception e){log.AppendText(T("종료 진단 저장 실패: {0}",e.Message)+Environment.NewLine);}
     }
     internal void CancelConversion() {
@@ -470,6 +494,8 @@ internal sealed class GuiError : Exception {
 internal static class GuiText {
     // Korean source keys and English translations share formatting arguments.
     internal static readonly Dictionary<string,string> English = new Dictionary<string,string> {
+        {"SDR/HDR 비교: 왼쪽 SDR · 오른쪽 HDR","Compare SDR / HDR: left SDR · right HDR"},
+        {"전체/시험 변환 · SDR 흰색 203 nits","Full / preview · SDR white 203 nits"},
         {"RTX Video HDR 업스케일러 · SDR → HDR","RTX Video HDR Upscaler · SDR → HDR"},
         {"RTX Video HDR 업스케일러","RTX Video HDR Upscaler"},
         {"NVIDIA RTX Video HDR로 SDR 영상을 HDR로 업스케일링합니다.","Upscale SDR video to HDR with NVIDIA RTX Video HDR."},

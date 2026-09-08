@@ -62,6 +62,24 @@ internal static class GuiLanguageTest {
                             Require(String.Join(",",Regex.Matches(entry.Key,@"\{\d+\}").ToStrings())==String.Join(",",Regex.Matches(entry.Value,@"\{\d+\}").ToStrings()),"Translation arguments: "+entry.Key);
                         }
                         f.Language.SelectedIndex=0;
+                        f.Input.Text=Path.Combine(Path.GetDirectoryName(path),"comparison-source.mp4");
+                        f.Checkpoint.Checked=true;
+                        Require(f.Comparison.Enabled && !f.Comparison.Checked,"Comparison defaults off, available for full video");
+                        f.preview.Checked=true;f.Comparison.Checked=true;
+                        Require(f.Comparison.Enabled && f.Checkpoint.Enabled && f.Checkpoint.Checked,"Comparison supports checkpoints");
+                        Require(f.Output.Text.EndsWith(".compare.hdr.mp4"),"Comparison default filename");
+                        f.FormatChoice.SelectedIndex=0;Require(f.Output.Text.EndsWith(".compare.hdr.mkv"),"Comparison MKV name");
+                        f.Language.SelectedIndex=1;Require(f.Output.Text.EndsWith(".compare.hdr.mkv") && f.Comparison.Checked,"Language preserves comparison");
+                        f.Language.SelectedIndex=0;
+                        CheckEnglish(f);Capture(f,path+".compare-en.png");
+                        f.Language.SelectedIndex=1;Capture(f,path+".compare-ko.png");f.Language.SelectedIndex=0;
+                        f.preview.Checked=false;Require(f.Comparison.Enabled && f.Checkpoint.Enabled && f.Output.Text.Contains(".compare."),"Full conversion retains comparison and checkpoints");
+                        f.preview.Checked=true;Require(f.Output.Text.Contains(".compare."),"Preview toggle restores comparison name");
+                        f.Output.Text=Path.Combine(Path.GetDirectoryName(path),"manual.mkv");
+                        f.Comparison.Checked=false;Require(f.Output.Text.EndsWith("manual.mkv"),"Comparison toggle preserves custom output");
+                        f.Comparison.Checked=true;f.Input.Text=Path.Combine(Path.GetDirectoryName(path),"another.mp4");
+                        Require(f.Output.Text.EndsWith("another.compare.hdr.mkv"),"Source change uses comparison name");
+                        f.preview.Checked=false;f.Comparison.Checked=false;
                         CheckEnglish(f);Capture(f,path+".en.png");
                         f.Language.SelectedIndex=1;Require(f.Text.Contains("업스케일러"),"Korean title");Capture(f,path+".ko.png");
                         f.Input.Text=Path.Combine(Path.GetDirectoryName(path),"missing-{0}.mp4");

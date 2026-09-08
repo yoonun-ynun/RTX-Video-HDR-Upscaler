@@ -8,6 +8,20 @@
 
 static const char* P010PackSource=R"(
 Texture2D<float4> rgb : register(t0);
+#ifdef SDR_HDR_COMPARE
+Texture2D<float4> sdr : register(t1);
+float linearSrgb(float c) { return c<=0.04045 ? c/12.92 : pow((c+0.055)/1.055,2.4); }
+float3 referencePQ(float3 c) {
+    // DXGI RGB_FULL_G22_NONE_P709 specifies the piecewise sRGB curve.
+    float3 light=float3(linearSrgb(c.r),linearSrgb(c.g),linearSrgb(c.b));
+    float3 wide=float3(dot(light,float3(0.627404,0.329283,0.043313)),
+                       dot(light,float3(0.069097,0.919540,0.011362)),
+                       dot(light,float3(0.016391,0.088013,0.895595)));
+    // Fixed SDR white: 203 cd/m2. This is a reference mapping, not HDR enhancement.
+    float3 p=pow(max(wide,0)*0.0203,2610.0/16384.0);
+    return pow((3424.0/4096.0+(2413.0/128.0)*p)/(1+(2392.0/128.0)*p),2523.0/32.0);
+}
+#endif
 RWByteAddressBuffer packed : register(u0);
 uint q(float x, float lo, float hi) { return uint(clamp(floor(x+0.5),lo,hi))<<6; }
 [numthreads(16,16,1)]
@@ -20,6 +34,10 @@ void main(uint3 id : SV_DispatchThreadID) {
         uint pair=0;
         [unroll] for(uint dx=0;dx<2;dx++) {
             float3 c=rgb.Load(int3(x+dx,y+dy,0)).rgb;
+#ifdef SDR_HDR_COMPARE
+            // Align the split to a chroma block: no mixed SDR/HDR chroma at the seam.
+            if(x+dx<(w/4)*2) c=referencePQ(sdr.Load(int3(x+dx,y+dy,0)).rgb);
+#endif
             float l=dot(c,float3(0.2627,0.6780,0.0593));
             pair |= q(64+876*l,64,940)<<(dx*16);
             cb+=(c.b-l)/(2*(1-0.0593)); cr+=(c.r-l)/(2*(1-0.2627));
@@ -223,17 +241,7 @@ void Pipeline::CreateResources(bool allowUnreportedConversion) {
         throw Failure(3, "Input/output format unsupported");
     experimental_ = !Supported();
     Check(video_->CreateVideoProcessor(enumerator_.Get(), 0, &processor_), "CreateVideoProcessor");
-    videoContext_->VideoProcessorSetStreamFrameFormat(processor_.Get(), 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
-    videoContext_->VideoProcessorSetStreamAutoProcessingMode(processor_.Get(), 0, FALSE);
-    for (unsigned i = 0; i <= D3D11_VIDEO_PROCESSOR_FILTER_STEREO_ADJUSTMENT; ++i)
-        videoContext_->VideoProcessorSetStreamFilter(processor_.Get(), 0, static_cast<D3D11_VIDEO_PROCESSOR_FILTER>(i), FALSE, 0);
-    videoContext_->VideoProcessorSetStreamColorSpace1(processor_.Get(), 0, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
-    videoContext_->VideoProcessorSetOutputColorSpace1(processor_.Get(), pq_ ? DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
-    RECT rect{0,0,static_cast<LONG>(width_),static_cast<LONG>(height_)};
-    videoContext_->VideoProcessorSetStreamSourceRect(processor_.Get(), 0, TRUE, &rect);
-    videoContext_->VideoProcessorSetStreamDestRect(processor_.Get(), 0, TRUE, &rect);
-    videoContext_->VideoProcessorSetOutputTargetRect(processor_.Get(), TRUE, &rect);
-    videoContext_->VideoProcessorSetStreamOutputRate(processor_.Get(), 0, D3D11_VIDEO_PROCESSOR_OUTPUT_RATE_NORMAL, TRUE, nullptr);
+    ConfigureProcessor(processor_.Get(),pq_);
     D3D11_TEXTURE2D_DESC td{};
     td.Width=width_; td.Height=height_; td.MipLevels=1; td.ArraySize=1;
     td.Format=input10_ ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12; td.SampleDesc.Count=1; td.Usage=D3D11_USAGE_DEFAULT;
@@ -251,6 +259,33 @@ void Pipeline::CreateResources(bool allowUnreportedConversion) {
     Check(device_->CreateTexture2D(&td, nullptr, &staging_), "CreateTexture2D staging");
     D3D11_QUERY_DESC q{D3D11_QUERY_EVENT,0};
     Check(device_->CreateQuery(&q, &completion_), "CreateQuery");
+}
+void Pipeline::ConfigureProcessor(ID3D11VideoProcessor* processor, bool pq) {
+    videoContext_->VideoProcessorSetStreamFrameFormat(processor, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+    videoContext_->VideoProcessorSetStreamAutoProcessingMode(processor, 0, FALSE);
+    for (unsigned i = 0; i <= D3D11_VIDEO_PROCESSOR_FILTER_STEREO_ADJUSTMENT; ++i)
+        videoContext_->VideoProcessorSetStreamFilter(processor, 0, static_cast<D3D11_VIDEO_PROCESSOR_FILTER>(i), FALSE, 0);
+    videoContext_->VideoProcessorSetStreamColorSpace1(processor, 0, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
+    videoContext_->VideoProcessorSetOutputColorSpace1(processor, pq ? DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+    RECT rect{0,0,static_cast<LONG>(width_),static_cast<LONG>(height_)};
+    videoContext_->VideoProcessorSetStreamSourceRect(processor, 0, TRUE, &rect);
+    videoContext_->VideoProcessorSetStreamDestRect(processor, 0, TRUE, &rect);
+    videoContext_->VideoProcessorSetOutputTargetRect(processor, TRUE, &rect);
+    videoContext_->VideoProcessorSetStreamOutputRate(processor, 0, D3D11_VIDEO_PROCESSOR_OUTPUT_RATE_NORMAL, TRUE, nullptr);
+}
+void Pipeline::EnableComparison() {
+    if(!processor_ || pq_ || packShader_ || texturePackShader_ || sdrProcessor_)
+        throw Failure(2,"Enable comparison once, after resource creation and before processing");
+    Check(video_->CreateVideoProcessor(enumerator_.Get(),0,&sdrProcessor_),"Create SDR reference processor");
+    ConfigureProcessor(sdrProcessor_.Get(),false);
+    constexpr GUID guid{0xfdd62bb4,0x620b,0x4fd7,{0x9a,0xb3,0x1e,0x59,0xd0,0xd5,0x44,0xb3}};
+    struct Payload {uint32_t version,method,flags;} payload{4,3,0};
+    Check(videoContext_->VideoProcessorSetStreamExtension(sdrProcessor_.Get(),0,&guid,sizeof(payload),&payload),"Disable HDR on SDR reference");
+    D3D11_TEXTURE2D_DESC desc{};output_->GetDesc(&desc);
+    Check(device_->CreateTexture2D(&desc,nullptr,&sdrOutput_),"Create SDR reference texture");
+    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC view{};view.ViewDimension=D3D11_VPOV_DIMENSION_TEXTURE2D;
+    Check(video_->CreateVideoProcessorOutputView(sdrOutput_.Get(),enumerator_.Get(),&view,&sdrOutputView_),"Create SDR reference output view");
+    Check(device_->CreateShaderResourceView(sdrOutput_.Get(),nullptr,&sdrView_),"Create SDR reference shader view");
 }
 void Pipeline::SetHdr(bool enable) {
     // Independently defined wire layout from the public vendor extension usage.
@@ -270,6 +305,7 @@ void Pipeline::Upload(const std::vector<uint8_t>& bytes) {
 void Pipeline::Blit(unsigned frame) {
     D3D11_VIDEO_PROCESSOR_STREAM stream{};
     stream.Enable=TRUE; stream.InputFrameOrField=frame; stream.pInputSurface=inputView_.Get();
+    if(sdrProcessor_) Check(videoContext_->VideoProcessorBlt(sdrProcessor_.Get(),sdrOutputView_.Get(),frame,1,&stream),"SDR reference blit");
     Check(videoContext_->VideoProcessorBlt(processor_.Get(), outputView_.Get(), frame, 1, &stream), "VideoProcessorBlt");
 }
 void Pipeline::WaitGpu(bool issue) {
@@ -286,6 +322,7 @@ void Pipeline::WaitGpu(bool issue) {
     }
 }
 std::vector<uint32_t> Pipeline::Process(unsigned frame) {
+    if(sdrProcessor_) throw Failure(2,"Comparison requires P010 output; raw RGB diagnostics are unavailable");
     if(p010Pending_) throw Failure(4,"Collect pending P010 before reusing output");
     Blit(frame);
     context_->CopyResource(staging_.Get(), output_.Get());
@@ -324,7 +361,8 @@ void Pipeline::PackP010() {
         // One thread owns a 2x2 block, so every packed 32-bit store is aligned and exclusive.
 
         ComPtr<ID3DBlob> code,errors;
-        HRESULT hr=D3DCompile(P010PackSource,std::strlen(P010PackSource),"p010",nullptr,nullptr,"main","cs_5_0",
+        D3D_SHADER_MACRO defines[]{{"SDR_HDR_COMPARE","1"},{nullptr,nullptr}};
+        HRESULT hr=D3DCompile(P010PackSource,std::strlen(P010PackSource),"p010",sdrProcessor_?defines:nullptr,nullptr,"main","cs_5_0",
             D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&code,&errors);
         if(FAILED(hr)) throw Failure(4,errors?std::string(static_cast<const char*>(errors->GetBufferPointer()),errors->GetBufferSize()):"P010 shader compile failed");
         Check(device_->CreateComputeShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&packShader_),"Create P010 shader");
@@ -338,12 +376,12 @@ void Pipeline::PackP010() {
         desc.Usage=D3D11_USAGE_STAGING; desc.BindFlags=0; desc.MiscFlags=0; desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
         Check(device_->CreateBuffer(&desc,nullptr,&packedStaging_),"Create P010 staging");
     }
-    auto srv=rgbView_.Get(); auto uav=packedView_.Get();
+    ID3D11ShaderResourceView* srv[]{rgbView_.Get(),sdrView_.Get()}; auto uav=packedView_.Get();
     context_->CSSetShader(packShader_.Get(),nullptr,0);
-    context_->CSSetShaderResources(0,1,&srv); context_->CSSetUnorderedAccessViews(0,1,&uav,nullptr);
+    context_->CSSetShaderResources(0,2,srv); context_->CSSetUnorderedAccessViews(0,1,&uav,nullptr);
     context_->Dispatch((width_/2+15)/16,(height_/2+15)/16,1);
-    srv=nullptr;uav=nullptr;
-    context_->CSSetShaderResources(0,1,&srv); context_->CSSetUnorderedAccessViews(0,1,&uav,nullptr);
+    srv[0]=srv[1]=nullptr;uav=nullptr;
+    context_->CSSetShaderResources(0,2,srv); context_->CSSetUnorderedAccessViews(0,1,&uav,nullptr);
     context_->CopyResource(packedStaging_.Get(),packed_.Get());
     context_->End(completion_.Get()); context_->Flush();
     p010Pending_=true;
@@ -381,7 +419,8 @@ void Pipeline::ProcessTexture(unsigned frame, ID3D11Texture2D* destination) {
         replace("packed.Store(((y+dy)*w+x)*2,pair);","planeY[uint2(x,y+dy)]=float(pair & 65535)/65535.0; planeY[uint2(x+1,y+dy)]=float(pair >> 16)/65535.0;");
         replace("packed.Store((w*h+(y/2)*w+x)*2,q(512+224*cb,64,960)|(q(512+224*cr,64,960)<<16));","planeUV[uint2(x/2,y/2)]=float2(q(512+224*cb,64,960),q(512+224*cr,64,960))/65535.0;");
         ComPtr<ID3DBlob> code,errors;
-        HRESULT hr=D3DCompile(source.data(),source.size(),"p010-texture",nullptr,nullptr,"main","cs_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&code,&errors);
+        D3D_SHADER_MACRO defines[]{{"SDR_HDR_COMPARE","1"},{nullptr,nullptr}};
+        HRESULT hr=D3DCompile(source.data(),source.size(),"p010-texture",sdrProcessor_?defines:nullptr,nullptr,"main","cs_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&code,&errors);
         if(FAILED(hr)) throw Failure(4,errors?std::string(static_cast<const char*>(errors->GetBufferPointer()),errors->GetBufferSize()):"Texture shader compile failed");
         Check(device_->CreateComputeShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&texturePackShader_),"Create texture pack shader");
     }
@@ -391,11 +430,11 @@ void Pipeline::ProcessTexture(unsigned frame, ID3D11Texture2D* destination) {
     view.Format=DXGI_FORMAT_R16_UNORM;Check(device_->CreateUnorderedAccessView(destination,&view,&y),"Create P010 Y UAV");
     view.Format=DXGI_FORMAT_R16G16_UNORM;Check(device_->CreateUnorderedAccessView(destination,&view,&uv),"Create P010 UV UAV");
     Blit(frame);
-    auto srv=rgbView_.Get();ID3D11UnorderedAccessView* uav[]{y.Get(),uv.Get()};
+    ID3D11ShaderResourceView* srv[]{rgbView_.Get(),sdrView_.Get()};ID3D11UnorderedAccessView* uav[]{y.Get(),uv.Get()};
     context_->CSSetShader(texturePackShader_.Get(),nullptr,0);
-    context_->CSSetShaderResources(0,1,&srv);context_->CSSetUnorderedAccessViews(0,2,uav,nullptr);
+    context_->CSSetShaderResources(0,2,srv);context_->CSSetUnorderedAccessViews(0,2,uav,nullptr);
     context_->Dispatch((width_/2+15)/16,(height_/2+15)/16,1);
-    srv=nullptr;uav[0]=uav[1]=nullptr;
-    context_->CSSetShaderResources(0,1,&srv);context_->CSSetUnorderedAccessViews(0,2,uav,nullptr);
+    srv[0]=srv[1]=nullptr;uav[0]=uav[1]=nullptr;
+    context_->CSSetShaderResources(0,2,srv);context_->CSSetUnorderedAccessViews(0,2,uav,nullptr);
     context_->Flush();
 }

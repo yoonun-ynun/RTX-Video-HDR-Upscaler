@@ -8,7 +8,7 @@ English | **[한국어 문서 (Korean)](docs/ko/README.md)**
 
 Choose a video, GPU, output format, and quality in the GUI. The output is **HEVC Main10 · BT.2020 · PQ**, saved as MKV or MP4. All conversion runs locally on your PC.
 
-> Latest release: **v0.4.2 — English/Korean GUI selection and automatic intermediate cleanup**
+> Latest release: **v0.4.3 — SDR/HDR split comparison for full videos and previews**
 > The original resolution and frame rate are preserved. Spatial resolution upscaling and frame interpolation are not included.
 
 [Technology](#technology) · [NGX HDR comparison](#how-does-this-differ-from-ngx-hdr-truehdr) · [Pipeline](#how-it-works) · [GUI guide](#gui-guide) · [CLI guide](#command-line-usage) · [Troubleshooting](#troubleshooting) · [Build](#building-from-source)
@@ -188,14 +188,17 @@ Output quality settings are saved immediately to **`settings.ini`** beside the e
 - Output format (MKV/MP4), selected GPU index and name
 - The checkpoint preference described under [Resuming failed or canceled jobs](#resuming-failed-or-canceled-jobs)
 
-Preview conversion and the assumed-color option are input-specific and reset on each launch. Source and output paths are not stored in the settings file. If the saved GPU is unavailable, the first available GPU is selected. Invalid values fall back to defaults. A settings write failure is shown in the GUI log.
+Preview conversion, SDR/HDR comparison and the assumed-color option are input-specific and reset on each launch. Source and output paths are not stored in the settings file. If the saved GPU is unavailable, the first available GPU is selected. Invalid values fall back to defaults. A settings write failure is shown in the GUI log.
 
 To reset settings, close the application and delete `settings.ini`. Copy your existing `settings.ini` when moving to a new version's folder to retain your preferences.
 
 ### Additional options
 
 - **Preview conversion: first 432 frames** — inspect a short result first. Duration depends on the source rate: about 6 seconds at 71.928 fps or 14.4 seconds at 30 fps.
+- **Compare SDR / HDR: left SDR · right HDR** — output the left half of each frame as an SDR reference and the right half with RTX HDR. Enable this alone for the full video; also enable **Preview: first 432 frames** for a short sample. Default name: `source.compare.hdr.mkv` or `.mp4`. Checkpoints support resuming comparison jobs after failure or cancellation.
 - **Assume BT.709 for untagged SDR** — use only for known SDR video with missing color tags. It does not force conversion of known other color spaces or HDR input.
+
+The entire comparison file uses BT.2020/PQ HDR. The left side receives no HDR expansion; its SDR reference white is mapped to 203 nits in the HDR color space. This is not an exact match for the Windows SDR brightness slider or every SDR player. View it with HDR enabled on an HDR display and player. Additional GPU work can reduce conversion speed. Resolution, frame rate and the selected container’s audio handling are preserved. Comparison defaults to off on launch; resuming a job restores its saved comparison mode.
 
 ## Recommended post-processing: final re-encode with explicit HDR metadata
 
@@ -243,6 +246,9 @@ Run these examples in PowerShell from the executable folder. Replace `input.mp4`
 
 # GPU 1, average 40 Mbps, MP4 output
 .\RTXVideoHDRConvert.exe "input.mp4" --adapter 1 --bitrate 40M --output "output.hdr.mp4"
+
+# Full-video split comparison (add --max-frames 432 for a short preview)
+.\RTXVideoHDRConvert.exe "input.mp4" --compare-sdr-hdr --output "input.compare.hdr.mkv"
 
 # Explicit CQ, preview only the first 432 frames
 .\RTXVideoHDRConvert.exe "input.mp4" --cq 18 --max-frames 432 --output "preview.hdr.mkv"

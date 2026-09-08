@@ -38,6 +38,7 @@ public:
     bool Supported() const;
     void CreateResources(bool allowUnreportedConversion = false);
     void SetHdr(bool enable);
+    void EnableComparison(); // Left SDR reference / right RTX HDR; P010 output only.
     std::string HdrState() const { return hdrState_; }
     void Upload(const std::vector<uint8_t>& bytes);
     std::vector<uint32_t> Process(unsigned frame);
@@ -54,6 +55,11 @@ private:
     void Blit(unsigned frame);
     void WaitGpu(bool issue = true);
     void PackP010();
+    void ConfigureProcessor(ID3D11VideoProcessor* processor, bool pq);
+    ComPtr<ID3D11VideoProcessor> sdrProcessor_;
+    ComPtr<ID3D11Texture2D> sdrOutput_;
+    ComPtr<ID3D11VideoProcessorOutputView> sdrOutputView_;
+    ComPtr<ID3D11ShaderResourceView> sdrView_;
     bool p010Pending_ = false;
     ComPtr<ID3D11ComputeShader> packShader_;
     ComPtr<ID3D11ComputeShader> texturePackShader_;

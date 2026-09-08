@@ -150,7 +150,7 @@ int wmain(int argc,wchar_t** argv) {
     bool interactive=argc==1 || (argc==2 && std::wstring(argv[1]).rfind(L"--",0)!=0);
     try {
         std::filesystem::path input,output,toolDirectory;
-        bool keepIntermediates=false,noCheckpoint=false;unsigned chunkSeconds=10;
+        bool keepIntermediates=false,noCheckpoint=false,compare=false;unsigned chunkSeconds=10;
         bool assume=false,softwareDecode=false,cpuColor=false,fullVerify=false,diagnostics=false,serialPipeline=false,pipeVideo=false;
         unsigned adapterIndex=0,maxFrames=0;
         std::wstring bitrate; unsigned cq=18; bool cqSet=false;
@@ -165,14 +165,15 @@ int wmain(int argc,wchar_t** argv) {
         }
         if((argc==3 || (argc==4 && std::wstring(argv[3])==L"--keep-intermediates")) && std::wstring(argv[1])==L"--resume") {
             job.Load(argv[2]);resuming=true;keepIntermediates=argc==4;input=job.input;output=job.output;adapterIndex=job.adapter;maxFrames=job.maximum;
-            cq=job.cq;bitrate=Wide(job.bitrate);assume=job.assume;chunkSeconds=job.chunkSeconds;fullVerify=job.fullVerify;toolDirectory=job.toolDirectory;
+            compare=job.compare;cq=job.cq;bitrate=Wide(job.bitrate);assume=job.assume;chunkSeconds=job.chunkSeconds;fullVerify=job.fullVerify;toolDirectory=job.toolDirectory;
         }
         for(int i=resuming?argc:1;i<argc;++i) {
             std::wstring arg=argv[i];
             if(arg==L"--help") {
-                std::cout << "RTX Video HDR Convert v0.4.2\nRTXVideoHDRConvert input.mp4 [--output output.hdr.mkv] [--adapter 0]\n"
+                std::cout << "RTX Video HDR Convert v0.4.3\nRTXVideoHDRConvert input.mp4 [--output output.hdr.mkv] [--adapter 0]\n"
                     "  [--ffmpeg-dir DIRECTORY] [--assume-bt709] [--max-frames N] [--bitrate 40M | --cq 18]\n"
                     "  [--software-decode] [--cpu-color] [--verify-full] [--diagnostics] [--serial-pipeline] [--pipe-video]\n"
+                    "  [--compare-sdr-hdr] Left SDR (203 nits) / right HDR; full video or --max-frames N preview.\n"
                     "Resume: RTXVideoHDRConvert --resume PATH/checkpoint.txt\n"
                     "  [--checkpoint-seconds 10] [--no-checkpoint] (native GPU path only)\n"
                     "  [--keep-intermediates] Keep temporary video/raw diagnostics after successful output.\n"
@@ -187,6 +188,7 @@ int wmain(int argc,wchar_t** argv) {
             else if(arg==L"--diagnostics") diagnostics=true;
             else if(arg==L"--serial-pipeline") serialPipeline=true;
             else if(arg==L"--pipe-video") pipeVideo=true;
+            else if(arg==L"--compare-sdr-hdr") compare=true;
             else if(arg==L"--no-checkpoint") noCheckpoint=true;
             else if(arg==L"--keep-intermediates") keepIntermediates=true;
             else if(arg==L"--checkpoint-seconds") {if(++i>=argc)throw Failure(2,"Missing checkpoint interval");size_t end=0;chunkSeconds=std::stoul(argv[i],&end);if(end!=std::wstring(argv[i]).size()||chunkSeconds<1||chunkSeconds>600)throw Failure(2,"Checkpoint interval must be 1..600 seconds");}
@@ -219,6 +221,9 @@ int wmain(int argc,wchar_t** argv) {
             } else if(arg.rfind(L"--",0)==0 || !input.empty()) throw Failure(2,"Unknown option or more than one input");
             else input=arg;
         }
+        if(compare) {
+            if(cpuColor || diagnostics) throw Failure(2,"SDR/HDR comparison does not support --cpu-color or --diagnostics");
+        }
         if(cqSet && !bitrate.empty()) throw Failure(2,"Choose --bitrate or --cq, not both");
         if(interactive) {
             std::cout << "Average video bitrate (e.g. 40M), or Enter for quality mode CQ 18: " << std::flush;
@@ -229,7 +234,7 @@ int wmain(int argc,wchar_t** argv) {
         const auto launched=std::chrono::steady_clock::now();
         if(input.empty() || !std::filesystem::is_regular_file(FileSystemPath(input))) throw Failure(2,"Input file not found");
         input=std::filesystem::absolute(input);
-        if(output.empty()) output=input.parent_path()/(input.stem().wstring()+L".hdr.mkv");
+        if(output.empty()) output=input.parent_path()/(input.stem().wstring()+(compare?L".compare.hdr.mkv":L".hdr.mkv"));
         output=std::filesystem::absolute(output);
         auto extension=output.extension().wstring();
         std::transform(extension.begin(),extension.end(),extension.begin(),[](wchar_t c){return static_cast<wchar_t>(towlower(c));});
@@ -248,13 +253,13 @@ int wmain(int argc,wchar_t** argv) {
         backend=nativeMode?"native_d3d11_nvenc":"ffmpeg_pipe";
         if(resuming&&!resumable)throw Failure(2,"Checkpoint resume requires the native GPU build");
         if(resumable) {
-            if(!resuming) {job.directory=CreateRunDirectory(output);job.input=input;job.output=output;job.adapter=adapterIndex;job.maximum=maxFrames;job.cq=cq;job.bitrate=Utf8(bitrate.c_str());job.assume=assume;job.chunkSeconds=chunkSeconds;job.fullVerify=fullVerify;job.toolDirectory=toolDirectory.empty()?toolDirectory:std::filesystem::absolute(toolDirectory);}
+            if(!resuming) {job.directory=CreateRunDirectory(output);job.input=input;job.output=output;job.adapter=adapterIndex;job.maximum=maxFrames;job.cq=cq;job.bitrate=Utf8(bitrate.c_str());job.assume=assume;job.compare=compare;job.chunkSeconds=chunkSeconds;job.fullVerify=fullVerify;job.toolDirectory=toolDirectory.empty()?toolDirectory:std::filesystem::absolute(toolDirectory);}
             jobLock.value=CreateFileW(FileSystemPath(job.directory/L"job.lock").c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
             if(jobLock.value==INVALID_HANDLE_VALUE)throw Failure(2,"This job is already running or cannot be locked");
             if(resuming) {job.Load(job.directory/L"checkpoint.txt");savedFrames=job.Count();}
             run=CreateRunDirectory(job.directory/L"attempt.mkv");
             std::cout<<"Logs: "<<Utf8(job.directory.c_str())<<"\nRTXHDR_INPUT "<<Utf8(input.c_str())<<"\nRTXHDR_OUTPUT "<<Utf8(output.c_str())<<"\nAttempt logs: "<<Utf8(run.c_str())<<'\n'<<std::flush;
-            std::cout<<"RTXHDR_JOB_SETTINGS "<<adapterIndex<<' '<<cq<<' '<<(bitrate.empty()?"0":Utf8(bitrate.c_str()))<<' '<<assume<<' '<<maxFrames<<'\n'<<std::flush;
+            std::cout<<"RTXHDR_JOB_SETTINGS "<<adapterIndex<<' '<<cq<<' '<<(bitrate.empty()?"0":Utf8(bitrate.c_str()))<<' '<<assume<<' '<<maxFrames<<' '<<compare<<'\n'<<std::flush;
             wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);
             auto engineHash=checkpoint::Hash(executable);
             for(auto name:{L"avcodec-62.dll",L"avformat-62.dll",L"avutil-60.dll"}) {
@@ -275,7 +280,8 @@ int wmain(int argc,wchar_t** argv) {
         } else {run=CreateRunDirectory(output);std::cout<<"Logs: "<<Utf8(run.c_str())<<'\n'<<std::flush;}
 
         auto ffmpeg=FindTool(L"ffmpeg.exe",toolDirectory),ffprobe=FindTool(L"ffprobe.exe",toolDirectory);
-        std::cout << "RTX Video HDR Convert v0.4.2\nInput: " << Utf8(input.c_str()) << '\n';
+        std::cout << "RTX Video HDR Convert v0.4.3\nInput: " << Utf8(input.c_str()) << '\n';
+        if(compare) std::cout << "Comparison: left SDR reference (203 cd/m2), right RTX HDR; " << (maxFrames?"first "+std::to_string(maxFrames)+" frames":"full video") << ".\n";
         currentStage="input_probe";
         auto v=Probe(ffprobe,input,run,assume,maxFrames);
         currentStage="hdr_prepare";
@@ -295,7 +301,9 @@ int wmain(int argc,wchar_t** argv) {
         std::unique_ptr<Pipeline> pipeline;
         if(!resumable||!job.videoDone) {
             pipeline=std::make_unique<Pipeline>(*chosen,v.width,v.height,false,v.input10,v.fpsNum,v.fpsDen);
-            pipeline->CreateResources();pipeline->SetHdr(true);diagnosticDevice=pipeline->Device();WriteText(run/L"environment.json",pipeline->Report());
+            pipeline->CreateResources();pipeline->SetHdr(true);
+            if(compare) pipeline->EnableComparison();
+            diagnosticDevice=pipeline->Device();WriteText(run/L"environment.json",pipeline->Report());
         }
         auto encoded=run/L"video.mkv",completed=run/(mp4?L"completed.mp4":L"completed.mkv");
         double readSeconds=0,processSeconds=0,writeSeconds=0,firstFrameSeconds=0,conversionSeconds=0;
@@ -501,7 +509,7 @@ int wmain(int argc,wchar_t** argv) {
         if(!MoveFileExW(FileSystemPath(completed).c_str(),FileSystemPath(output).c_str(),MOVEFILE_WRITE_THROUGH))
             throw Failure(6,FileError("Cannot finalize output",output,GetLastError()));
         std::ostringstream report;
-        report << "{\"status\":\"completed\",\"test_version\":\"0.4.2\",\"frames\":" << count
+        report << "{\"status\":\"completed\",\"test_version\":\"0.4.3\",\"frames\":" << count
             << ",\"hdr_effect_mae\":" << (resumable&&restoredFrames==count?"null":std::to_string(effect)) << ",\"input\":" << JsonString(Utf8(input.c_str()))
             << ",\"output\":" << JsonString(Utf8(output.c_str()))
             << ",\"width\":" << v.width << ",\"height\":" << v.height
@@ -513,6 +521,9 @@ int wmain(int argc,wchar_t** argv) {
         reportText.erase(reportText.rfind('}'));
         std::ostringstream performance;
         performance << ",\"hardware_decode\":" << (softwareDecode?"false":"true")
+            << ",\"comparison_mode\":" << (compare?"\"left_sdr_right_hdr\"":"null")
+            << ",\"sdr_reference_white_nits\":" << (compare?"203":"null")
+            << ",\"comparison_split_x\":" << (compare?std::to_string((v.width/4)*2):"null")
             << ",\"gpu_color\":" << (cpuColor?"false":"true")
             << ",\"overlapped_pipeline\":" << (overlap?"true":"false")
             << ",\"native_gpu_pipeline\":" << (nativeMode?"true":"false")
@@ -542,7 +553,7 @@ int wmain(int argc,wchar_t** argv) {
             try {
                 ULARGE_INTEGER free{};GetDiskFreeSpaceExW(FileSystemPath(run).c_str(),&free,nullptr,nullptr);
                 const auto elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-attemptStart).count();
-                std::ostringstream error;error<<"{\"version\":\"0.4.2\",\"backend\":"<<JsonString(backend)<<",\"stage\":"<<JsonString(currentStage)
+                std::ostringstream error;error<<"{\"version\":\"0.4.3\",\"backend\":"<<JsonString(backend)<<",\"stage\":"<<JsonString(currentStage)
                     <<",\"last_submitted_frame_count\":"<<lastFrame<<",\"saved_frame_count\":"<<savedFrames<<",\"elapsed_seconds\":"<<elapsed
                     <<",\"available_disk_bytes\":"<<free.QuadPart<<",\"gpu\":"<<gpuState<<",\"device_removed_hresult\":";
                 if(diagnosticDevice)error<<diagnosticDevice->GetDeviceRemovedReason();else error<<"null";

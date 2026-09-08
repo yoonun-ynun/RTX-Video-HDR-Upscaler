@@ -86,3 +86,17 @@ Select **English** or **한국어** from the **Language / 언어** dropdown at t
 Application labels, stage messages, input errors, and file-picker titles are localized. Existing log history and engine/FFmpeg diagnostics stay as recorded; Windows-owned dialog buttons use Windows settings.
 
 Validation covers both languages, switching during progress and mux/cleanup stages, preserving paths/settings, translated input errors, fresh-process language restoration, default/legacy settings, and layout at 150% DPI. Run `tools/verify-gui-language.ps1 -BuildDirectory <build-folder>`. Actual conversion tests support `tools/verify-gui.ps1 -BuildDirectory <build-folder> -Language en` or `-Language ko`.
+
+## SDR/HDR split comparison (v0.4.3)
+
+Select **Compare SDR / HDR: left SDR · right HDR** to use an SDR reference on the left half of each frame and RTX HDR on the right. The original composition is preserved; two complete images are not squeezed side by side. Leave **Preview: first 432 frames** off for the full video, or enable it to stop after 432 frames. Shorter inputs stop at EOF. Comparison defaults to off on launch; resuming a checkpoint restores the saved comparison mode.
+
+The automatic filename is `source.compare.hdr.mkv` or `.mp4`. Toggling comparison preserves a manually chosen path. Choosing a new source resets the path beside that source with the comparison suffix. GPU selection, CQ/VBR, container/audio muxing, optional checkpoints and successful intermediate cleanup work as in normal conversion.
+
+The whole output is BT.2020/PQ. A separate GPU Video Processor keeps NVIDIA HDR disabled for the left reference; its SDR RGB is linearized, converted from BT.709 to BT.2020 primaries, then PQ encoded with white at 203 nits. The right HDR RGB is not transformed again. The SDR output format follows DXGI `RGB_FULL_G22_NONE_P709`'s [piecewise sRGB transfer definition](https://learn.microsoft.com/en-us/windows/win32/api/dxgicommon/ne-dxgicommon-dxgi_color_space_type). The 203-nit white is this application's fixed reference, not a reproduction of the Windows SDR brightness setting. Use an HDR display and player for comparison.
+
+Both Video Processors use the same decoded frame and D3D11 device. Composition runs in the existing P010 GPU shader, adding no CPU frame round trip to the default GPU path. SDR reference processing still adds GPU work and VRAM use. The split is aligned to an even pixel to avoid mixing SDR and HDR in a 4:2:0 chroma block. For widths not divisible by four, the left side ends one pixel before the midpoint.
+
+Use `--compare-sdr-hdr` from the CLI; add `--max-frames 432` to limit duration and `--no-checkpoint` to disable saved segments. `--pipe-video` is supported. Raw RGB diagnostics (`--diagnostics`, `--cpu-color`) are incompatible with comparison. Checkpoint v2 stores comparison mode. Jobs created by an older build still require their original converter build to resume.
+
+`GpuComparisonTests.exe <GPU index>` checks 1918/1920 widths, 8/10-bit input, ramps/color bars, SDR reference correctness, HDR preservation and native-texture/pipe-buffer agreement. Default CTest includes checkpoint v2 round trips and legacy defaults. `tools/verify-gui.ps1` covers normal/full/preview comparison, MKV/MP4, cancellation and resume.

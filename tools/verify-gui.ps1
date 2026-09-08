@@ -1,4 +1,4 @@
-﻿param([string]$InputVideo, [string]$BuildDirectory, [ValidateSet('ko','en')][string]$Language = 'ko', [switch]$SkipResume)
+﻿param([string]$InputVideo, [string]$BuildDirectory, [ValidateSet('ko','en')][string]$Language = 'ko', [switch]$SkipResume, [string]$ResumeInputVideo)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 if (!$BuildDirectory) { $BuildDirectory = Join-Path $repo 'build' }
@@ -11,7 +11,7 @@ $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 & $compiler /nologo /target:winexe /platform:x64 /codepage:65001 /r:System.Windows.Forms.dll /r:System.Drawing.dll /main:GuiSmokeTest /win32manifest:"$repo\src\gui.manifest" /out:"$BuildDirectory\Release\GuiSmokeTest.exe" "$repo\src\gui.cs" "$repo\tests\gui-smoke.cs"
 if ($LASTEXITCODE -ne 0) { throw 'GUI test compilation failed' }
 Copy-Item -LiteralPath "$repo\src\gui.config" -Destination "$BuildDirectory\Release\GuiSmokeTest.exe.config"
-foreach ($case in @(@('mkv','vbr'), @('mp4','cq'), @('mkv','cancel'), @('mkv','fast'), @('mkv','fast-cancel'))) {
+foreach ($case in @(@('mkv','vbr'), @('mp4','cq'), @('mkv','cancel'), @('mkv','fast'), @('mkv','fast-cancel'), @('mkv','compare-full'), @('mkv','compare'), @('mp4','compare-mp4'), @('mkv','compare-cancel'))) {
     $name = $case[1]
     $output = Join-Path $run "$name.$($case[0])"
     $screenshot = Join-Path $run "$name.png"
@@ -33,11 +33,13 @@ Write-Output "GUI tests passed: $run"
 & $compiler /nologo /target:winexe /platform:x64 /codepage:65001 /r:System.Windows.Forms.dll /r:System.Drawing.dll /main:GuiResumeTest /win32manifest:"$repo\src\gui.manifest" /out:"$BuildDirectory\Release\GuiResumeTest.exe" "$repo\src\gui.cs" "$repo\tests\gui-resume.cs"
 if ($LASTEXITCODE -ne 0) { throw 'GUI resume test compilation failed' }
 Copy-Item -LiteralPath "$repo\src\gui.config" -Destination "$BuildDirectory\Release\GuiResumeTest.exe.config"
-$resumeInput = Join-Path $repo 'artifacts\native-long-tagged.mp4'
+$resumeInput = if ($ResumeInputVideo) { (Get-Item -LiteralPath $ResumeInputVideo).FullName } else { Join-Path $repo 'artifacts\native-long-tagged.mp4' }
 if (!$SkipResume -and (Test-Path -LiteralPath $resumeInput)) {
-    $resumeOutput = Join-Path $run 'resume.mkv'
-    $resumeArgs = '"' + $resumeInput + '" "' + $resumeOutput + '"'
-    $resumeProcess = Start-Process -FilePath "$BuildDirectory\Release\GuiResumeTest.exe" -ArgumentList $resumeArgs -WindowStyle Hidden -Wait -PassThru
-    Get-Content -LiteralPath "$resumeOutput.test.txt" -Tail 8
-    if ($resumeProcess.ExitCode -ne 0) { throw 'GUI cancel/reopen/resume test failed' }
+    foreach ($resumeMode in @('normal','compare')) {
+        $resumeOutput = Join-Path $run "resume-$resumeMode.mkv"
+        $resumeArgs = '"' + $resumeInput + '" "' + $resumeOutput + '" ' + $resumeMode
+        $resumeProcess = Start-Process -FilePath "$BuildDirectory\Release\GuiResumeTest.exe" -ArgumentList $resumeArgs -WindowStyle Hidden -Wait -PassThru
+        Get-Content -LiteralPath "$resumeOutput.test.txt" -Tail 8
+        if ($resumeProcess.ExitCode -ne 0) { throw "GUI cancel/reopen/resume test failed: $resumeMode" }
+    }
 }

@@ -9,7 +9,8 @@ internal static class GuiSmokeTest {
         bool english=args.Length>4 && args[4]=="en";
         f.Language.SelectedIndex=english?0:1;
         bool cancel=args.Length>3 && args[3].EndsWith("cancel");
-        bool fast=args.Length>3 && args[3].StartsWith("fast"), routing=false;
+        bool compare=args.Length>3 && args[3].StartsWith("compare");
+        bool fast=(args.Length>3 && args[3].StartsWith("fast")), routing=false;
         string recent=Path.Combine(Path.GetDirectoryName(args[2]),"last-checkpoint.txt");
         string previousRecent=File.Exists(recent)?File.ReadAllText(recent):null;
         DateTime deadline=DateTime.Now.AddSeconds(90);
@@ -17,11 +18,12 @@ internal static class GuiSmokeTest {
         f.Shown += delegate {
             f.FormatChoice.SelectedIndex=args[1].EndsWith(".mp4")?1:0;
             f.mode.SelectedIndex=args.Length>3 && args[3]=="vbr"?1:0;
-            f.Checkpoint.Checked=!fast;
+            f.Checkpoint.Checked=compare || !fast;
+            f.preview.Checked=compare && args[3]!="compare-full";f.Comparison.Checked=compare;
             f.Input.Text=args[0];f.Output.Text=args[1];
             if(f.Gpu.Items.Count>1 && args[1].EndsWith(".mp4")) f.Gpu.SelectedIndex=1;
             using(Bitmap bitmap=new Bitmap(f.Width,f.Height)) {f.DrawToBitmap(bitmap,new Rectangle(0,0,f.Width,f.Height));bitmap.Save(args[2]);}
-            f.StartConversion();routing=f.Running!=null && f.Running.StartInfo.Arguments.Contains("--no-checkpoint")==fast && !f.Checkpoint.Enabled;timer.Start();
+            f.StartConversion();routing=f.Running!=null && f.Running.StartInfo.Arguments.Contains("--no-checkpoint")==fast && !f.Checkpoint.Enabled && f.Running.StartInfo.Arguments.Contains("--compare-sdr-hdr")==compare && !f.Comparison.Enabled;timer.Start();
         };
         timer.Tick += delegate {
             if(cancel && f.SawProgress && f.Running!=null) f.CancelConversion();

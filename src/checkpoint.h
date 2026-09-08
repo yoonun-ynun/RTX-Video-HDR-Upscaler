@@ -54,7 +54,7 @@ struct Part {std::string path,hash;uint64_t frames=0;};
 struct Job {
     std::filesystem::path directory,input,output;
     unsigned adapter=0,maximum=0,cq=18,chunkSeconds=10;
-    bool assume=false,videoDone=false,fullVerify=false;
+    bool assume=false,videoDone=false,fullVerify=false,compare=false;
     std::filesystem::path toolDirectory;
     std::string bitrate,identity,gpu,engine,muxPath,muxHash;
     uint64_t size=0;int64_t modified=0;
@@ -62,9 +62,9 @@ struct Job {
     std::vector<Part> parts;
     uint64_t Count() const {uint64_t n=0;for(auto& p:parts)n+=p.frames;return n;}
     void Save() const {
-        std::ostringstream s;s<<std::setprecision(20)<<"RTXHDR_CHECKPOINT_1\n";
+        std::ostringstream s;s<<std::setprecision(20)<<"RTXHDR_CHECKPOINT_2\n";
         s<<std::quoted(Utf8(input.c_str()))<<' '<<std::quoted(Utf8(output.c_str()))<<'\n';
-        s<<adapter<<' '<<maximum<<' '<<cq<<' '<<assume<<' '<<chunkSeconds<<' '<<std::quoted(bitrate)<<' '<<fullVerify<<' '<<std::quoted(Utf8(toolDirectory.c_str()))<<'\n';
+        s<<adapter<<' '<<maximum<<' '<<cq<<' '<<assume<<' '<<chunkSeconds<<' '<<std::quoted(bitrate)<<' '<<fullVerify<<' '<<std::quoted(Utf8(toolDirectory.c_str()))<<' '<<compare<<'\n';
         s<<size<<' '<<modified<<' '<<std::quoted(identity)<<' '<<std::quoted(gpu)<<' '<<std::quoted(engine)<<'\n';
         s<<start<<' '<<videoDone<<' '<<std::quoted(muxPath)<<' '<<std::quoted(muxHash)<<' '<<parts.size()<<'\n';
         for(auto& p:parts)s<<std::quoted(p.path)<<' '<<std::quoted(p.hash)<<' '<<p.frames<<'\n';
@@ -83,8 +83,9 @@ struct Job {
         std::getline(file,expected);std::string payload((std::istreambuf_iterator<char>(file)),{});
         if(expected!=Digest(payload))throw Failure(2,"Checkpoint manifest is damaged");
         std::istringstream f(payload);std::string version,i,o,tools;size_t count=0;
-        std::getline(f,version);if(version!="RTXHDR_CHECKPOINT_1")throw Failure(2,"Unsupported checkpoint version");
+        std::getline(f,version);if(version!="RTXHDR_CHECKPOINT_1" && version!="RTXHDR_CHECKPOINT_2")throw Failure(2,"Unsupported checkpoint version");
         f>>std::quoted(i)>>std::quoted(o)>>adapter>>maximum>>cq>>assume>>chunkSeconds>>std::quoted(bitrate)>>fullVerify>>std::quoted(tools);
+        compare=false;if(version=="RTXHDR_CHECKPOINT_2")f>>compare;
         f>>size>>modified>>std::quoted(identity)>>std::quoted(gpu)>>std::quoted(engine);
         f>>start>>videoDone>>std::quoted(muxPath)>>std::quoted(muxHash)>>count;
         if(!f||count>100000||cq>51||adapter>100||chunkSeconds<1||chunkSeconds>600||!std::isfinite(start))throw Failure(2,"Damaged checkpoint");
